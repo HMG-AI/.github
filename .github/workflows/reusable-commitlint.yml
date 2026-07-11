@@ -1,0 +1,76 @@
+name: Reusable Commit Lint
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        description: Full base commit SHA that defines the start of the lint range
+        required: true
+        type: string
+      head_sha:
+        description: Full head commit SHA that defines the end of the lint range
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  commitlint:
+    name: commitlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: node:24.11.1-bookworm@sha256:9a2ed90cd91b1f3412affe080b62e69b057ba8661d9844e143a6bbd76a23260f
+      options: --cap-drop=ALL --security-opt=no-new-privileges
+    steps:
+      - name: Validate commit SHA inputs
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          readonly sha_pattern='^[0-9a-f]{40}$'
+
+          for sha_name in BASE_SHA HEAD_SHA; do
+            sha_value="${!sha_name}"
+            if [[ ! "${sha_value}" =~ ${sha_pattern} ]]; then
+              echo "::error::${sha_name} must be a full 40-character lowercase hexadecimal commit SHA"
+              exit 2
+            fi
+          done
+
+      - name: Check out caller repository history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.head_sha }}
+          path: caller
+          persist-credentials: false
+
+      - name: Check out trusted commitlint assets
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: HMG-AI/.github
+          ref: 96bdc215df3db73fd1394e1e4f831e7e58caa702
+          path: governance-source
+          sparse-checkout: governance/commitlint
+          persist-credentials: false
+
+      - name: Install locked commitlint dependencies
+        shell: bash
+        working-directory: governance-source/governance/commitlint
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Lint every commit in base..head
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          bash "${GITHUB_WORKSPACE}/governance-source/governance/commitlint/lint-range.sh" \
+            "${GITHUB_WORKSPACE}/caller" \
+            "${BASE_SHA}" \
+            "${HEAD_SHA}"
