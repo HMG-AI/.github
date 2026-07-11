@@ -1,0 +1,11 @@
+name: Direct main push
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          git push origin \
+            HEAD:refs/heads/main

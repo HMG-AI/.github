@@ -1,0 +1,24 @@
+name: Good trusted release workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    container:
+      image: alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    services:
+      cache:
+        image: redis@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - uses: docker://alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - run: git push origin HEAD:refs/heads/release-candidate

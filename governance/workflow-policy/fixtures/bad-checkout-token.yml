@@ -1,0 +1,13 @@
+name: Pull request checkout override
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+          token: ${{ secrets.SPECIAL_TOKEN }}
+          ssh-key: ${{ secrets.SPECIAL_KEY }}

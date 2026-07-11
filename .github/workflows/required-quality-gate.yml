@@ -18,3 +18,34 @@ jobs:
     with:
       base_sha: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       head_sha: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+
+  workflow-security-policy:
+    name: workflow-security-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out immutable organization policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: HMG-AI/.github
+          ref: ${{ github.workflow_sha }}
+          path: policy-source
+          persist-credentials: false
+
+      - name: Check out exact event head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          fetch-depth: 0
+          path: target-repository
+          persist-credentials: false
+
+      - name: Enforce workflow security policy on changed workflows
+        shell: bash
+        env:
+          POLICY_SOURCE_DIR: policy-source
+          TARGET_REPOSITORY_DIR: target-repository
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: bash policy-source/governance/workflow-policy/run.sh

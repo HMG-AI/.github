@@ -1,0 +1,9 @@
+name: Direct run interpolation
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: printf '%s\n' '${{ inputs.tag }}' '${{ github.ref_name }}'

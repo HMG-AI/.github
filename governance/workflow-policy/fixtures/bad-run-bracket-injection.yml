@@ -1,0 +1,9 @@
+name: Direct bracket-form interpolation
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: printf '%s\n' "${{ github['event']['inputs']['tag'] }}"

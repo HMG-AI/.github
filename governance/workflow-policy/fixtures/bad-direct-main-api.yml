@@ -1,0 +1,9 @@
+name: Direct main API mutation
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: gh api -X PATCH repos/HMG-AI/HMG/git/refs/heads/main -f sha=deadbeef

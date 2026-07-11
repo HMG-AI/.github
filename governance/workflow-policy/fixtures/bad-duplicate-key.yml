@@ -1,0 +1,12 @@
+name: Duplicate mapping key
+on: push
+permissions:
+  contents: read
+permissions:
+  actions: read
+true: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: "true"

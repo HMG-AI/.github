@@ -1,0 +1,9 @@
+name: YAML alias
+on: push
+permissions: {}
+defaults: &defaults
+  runs-on: ubuntu-24.04
+  steps:
+    - run: "true"
+jobs:
+  test: *defaults
