@@ -30,7 +30,7 @@ Every commit in a pull request must follow Conventional Commits:
 <type>(optional-scope): <imperative English summary>
 ```
 
-Allowed common types are `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`, and `security`. The subject, body, and footer must not contain Han-script characters. Use English commit messages so release automation and cross-team history remain consistent. Documentation and issue discussion may be written in Chinese or English.
+Allowed common types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, and `revert`. Use a standard type with a `security` scope for security work, for example `fix(security): reject expired session tokens`. The subject, body, and footer must not contain Han-script characters. Use English commit messages so release automation and cross-team history remain consistent. Documentation and issue discussion may be written in Chinese or English.
 
 Examples:
 
