@@ -165,20 +165,47 @@ jobs:
             --repo HMG-AI/HMG \
             --dir "${asset_dir}"
 
-          for required_asset in SHA256SUMS.txt install.sh install.ps1 version.json; do
-            if [[ ! -f "${asset_dir}/${required_asset}" ]]; then
-              echo "::error::Private release is missing ${required_asset}"
-              exit 2
-            fi
-          done
-          package_count="$(find "${asset_dir}" -maxdepth 1 -type f \
-            \( -name 'hmg-*.tar.gz' -o -name 'hmg-*.zip' \) | wc -l)"
-          if (( package_count != 6 )); then
-            echo "::error::Expected six platform packages, found ${package_count}"
+          readonly version="${RELEASE_TAG#v}"
+          readonly expected_packages=(
+            "hmg-${version}-aarch64-apple-darwin.tar.gz"
+            "hmg-${version}-aarch64-pc-windows-msvc.zip"
+            "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz"
+            "hmg-${version}-x86_64-apple-darwin.tar.gz"
+            "hmg-${version}-x86_64-pc-windows-msvc.zip"
+            "hmg-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          )
+          readonly expected_assets=(
+            "${expected_packages[@]}"
+            SHA256SUMS.txt
+            install.ps1
+            install.sh
+            version.json
+          )
+          expected_asset_list="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
+          actual_asset_list="$(find "${asset_dir}" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "${actual_asset_list}" != "${expected_asset_list}" ]]; then
+            echo "::error::Private release must contain exactly the ten governed assets"
+            printf 'Expected:\n%s\nActual:\n%s\n' "${expected_asset_list}" "${actual_asset_list}"
             exit 2
           fi
-          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${RELEASE_TAG}" ]]; then
-            echo "::error::version.json tag does not match ${RELEASE_TAG}"
+          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${RELEASE_TAG}" || \
+                "$(jq -r '.version' "${asset_dir}/version.json")" != "${version}" ]]; then
+            echo "::error::version.json does not match ${RELEASE_TAG}"
+            exit 2
+          fi
+          if ! awk 'NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ {next} {exit 1}' \
+              "${asset_dir}/SHA256SUMS.txt"; then
+            echo "::error::SHA256SUMS.txt must contain strict lowercase SHA-256 records"
+            exit 2
+          fi
+          expected_package_list="$(printf '%s\n' "${expected_packages[@]}" | LC_ALL=C sort)"
+          checksum_package_list="$(awk '{print $2}' "${asset_dir}/SHA256SUMS.txt" | sed 's/^\*//' | LC_ALL=C sort)"
+          if [[ "${checksum_package_list}" != "${expected_package_list}" ]]; then
+            echo "::error::SHA256SUMS.txt must cover exactly the six governed packages"
+            exit 2
+          fi
+          if ! (cd "${asset_dir}" && sha256sum --check --strict SHA256SUMS.txt); then
+            echo "::error::Private release package checksum verification failed"
             exit 2
           fi
 
@@ -187,7 +214,7 @@ jobs:
               printf '%s  %s\n' \
                 "$(sha256sum "${asset}" | cut -d ' ' -f1)" \
                 "$(basename "${asset}")"
-            done | sort -k2
+            done | LC_ALL=C sort -k2
           )"
           printf '%s\n' "${asset_manifest}" > "${RUNNER_TEMP}/hmg-source-assets.sha256"
           asset_set_sha256="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"

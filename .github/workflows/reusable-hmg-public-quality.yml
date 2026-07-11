@@ -124,12 +124,54 @@ jobs:
           gh release download "${release_tag}" \
             --repo HMG-AI/HMG-public \
             --dir "${asset_dir}"
+          readonly version="${release_tag#v}"
+          readonly expected_packages=(
+            "hmg-${version}-aarch64-apple-darwin.tar.gz"
+            "hmg-${version}-aarch64-pc-windows-msvc.zip"
+            "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz"
+            "hmg-${version}-x86_64-apple-darwin.tar.gz"
+            "hmg-${version}-x86_64-pc-windows-msvc.zip"
+            "hmg-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          )
+          readonly expected_assets=(
+            "${expected_packages[@]}"
+            SHA256SUMS.txt
+            install.ps1
+            install.sh
+            version.json
+          )
+          expected_asset_list="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
+          actual_asset_list="$(find "${asset_dir}" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "${actual_asset_list}" != "${expected_asset_list}" ]]; then
+            echo "::error::Draft release must contain exactly the ten governed assets"
+            exit 2
+          fi
+          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${release_tag}" || \
+                "$(jq -r '.version' "${asset_dir}/version.json")" != "${version}" ]]; then
+            echo "::error::Draft version.json does not match ${release_tag}"
+            exit 2
+          fi
+          if ! awk 'NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ {next} {exit 1}' \
+              "${asset_dir}/SHA256SUMS.txt"; then
+            echo "::error::SHA256SUMS.txt must contain strict lowercase SHA-256 records"
+            exit 2
+          fi
+          expected_package_list="$(printf '%s\n' "${expected_packages[@]}" | LC_ALL=C sort)"
+          checksum_package_list="$(awk '{print $2}' "${asset_dir}/SHA256SUMS.txt" | sed 's/^\*//' | LC_ALL=C sort)"
+          if [[ "${checksum_package_list}" != "${expected_package_list}" ]]; then
+            echo "::error::SHA256SUMS.txt must cover exactly the six governed packages"
+            exit 2
+          fi
+          if ! (cd "${asset_dir}" && sha256sum --check --strict SHA256SUMS.txt); then
+            echo "::error::Draft release package checksum verification failed"
+            exit 2
+          fi
           asset_manifest="$(
             for asset in "${asset_dir}"/*; do
               printf '%s  %s\n' \
                 "$(sha256sum "${asset}" | cut -d ' ' -f1)" \
                 "$(basename "${asset}")"
-            done | sort -k2
+            done | LC_ALL=C sort -k2
           )"
           actual_digest="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
           if [[ "${actual_digest}" != "${expected_digest}" ]]; then
@@ -164,6 +206,16 @@ jobs:
             exit 1
           fi
 
+          forbidden_paths="$(find "${root}" \
+            -path "${root}/.git" -prune -o \
+            \( -path '*/crates/hmg-*' -o -path '*/docs/adr' -o -path '*/docs/md/adr-classification.md' \) \
+            -print 2>/dev/null || true)"
+          if [[ -n "${forbidden_paths}" ]]; then
+            echo "::error::Internal-only paths found in public candidate"
+            printf '%s\n' "${forbidden_paths}"
+            exit 1
+          fi
+
           forbidden_dirs="$(find "${root}" -type d \
             \( -name target -o -name node_modules -o -name __pycache__ \) \
             -print -prune 2>/dev/null || true)"
@@ -173,12 +225,27 @@ jobs:
             exit 1
           fi
 
-          for forbidden_path in docs/adr docs/md/adr-classification.md; do
-            if [[ -e "${root}/${forbidden_path}" ]]; then
-              echo "::error::Internal-only path found: ${forbidden_path}"
-              exit 1
-            fi
-          done
+          license_hits="$(grep -rnEi '\b(AGPL|GPL)(-[0-9.]+)?\b' "${root}" \
+            --include='*.toml' --include='*.rs' --include='*.md' \
+            --exclude='check-export-leak.sh' --exclude-dir='.git' 2>/dev/null \
+            | grep -vE 'NOT GPL|not GPL|dual license|is licensed' || true)"
+          if [[ -n "${license_hits}" ]]; then
+            echo "::error::GPL/AGPL references require license review"
+            printf '%s\n' "${license_hits}"
+            exit 1
+          fi
+
+          email_hits="$(grep -rnE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "${root}" \
+            --include='*.rs' --include='*.toml' --include='*.ts' --include='*.py' \
+            --include='*.sh' --exclude='check-export-leak.sh' --exclude-dir='.git' \
+            2>/dev/null \
+            | grep -vE '@(example|test|localhost|noreply)|users\.noreply|@hmg\.ai|@apache\.org|@github\.com|@hmg1ai\.com|@hmg2ai\.com' \
+            || true)"
+          if [[ -n "${email_hits}" ]]; then
+            echo "::error::Possible customer or personal email addresses found"
+            printf '%s\n' "${email_hits}"
+            exit 1
+          fi
 
           symlinks="$(find "${root}" -path "${root}/.git" -prune -o -type l -print)"
           if [[ -n "${symlinks}" ]]; then
