@@ -141,9 +141,11 @@ jobs:
             exit 2
           fi
           for required_file in \
+            .github/actionlint.yaml \
             .github/CODEOWNERS \
             .github/workflows/commitlint.yml \
             .github/workflows/commitlint-approval.yml \
+            .github/workflows/publish-promoted-release.yml \
             commitlint.config.mjs; do
             if [[ ! -f "candidate/${required_file}" ]]; then
               echo "::error::Required target-owned file is missing: ${required_file}"
