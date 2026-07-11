@@ -1,0 +1,236 @@
+name: Reusable HMG Public Quality
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        description: Full HMG-public base commit SHA
+        required: true
+        type: string
+      head_sha:
+        description: Full HMG-public candidate commit SHA
+        required: true
+        type: string
+      head_ref:
+        description: Pull-request head branch or merge-group ref
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hmg-public-quality-${{ inputs.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: public-export-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate immutable inputs and repository
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${TARGET_REPOSITORY}" != "HMG-AI/HMG-public" ]]; then
+            echo "::error::This quality profile only accepts HMG-AI/HMG-public"
+            exit 2
+          fi
+          readonly sha_pattern='^[0-9a-f]{40}$'
+          for sha_name in BASE_SHA HEAD_SHA; do
+            sha_value="${!sha_name}"
+            if [[ ! "${sha_value}" =~ ${sha_pattern} ]]; then
+              echo "::error::${sha_name} must be a full lowercase commit SHA"
+              exit 2
+            fi
+          done
+
+      - name: Check out the candidate with full history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+
+      - name: Protect target-owned governance during automated promotion
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${HEAD_REF}" == release/hmg-public/v* ]]; then
+            changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+              .github commitlint.config.mjs)"
+            if [[ -n "${changed}" ]]; then
+              echo "::error::Automated promotion cannot change target-owned governance files"
+              printf '%s\n' "${changed}"
+              exit 2
+            fi
+
+            base_version="$(tr -d '[:space:]' < <(git -C candidate show "${BASE_SHA}:VERSION"))"
+            head_version="$(tr -d '[:space:]' < candidate/VERSION)"
+            highest_version="$(printf '%s\n%s\n' "${base_version}" "${head_version}" | sort -V | tail -n 1)"
+            if [[ "${highest_version}" != "${head_version}" || "${head_version}" == "${base_version}" ]]; then
+              echo "::error::Promotion VERSION ${head_version} must be newer than base ${base_version}"
+              exit 2
+            fi
+          fi
+
+      - name: Verify promotion provenance and draft release assets
+        if: startsWith(inputs.head_ref, 'release/hmg-public/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          commit_body="$(git -C candidate show -s --format=%B "${HEAD_SHA}")"
+          release_tag="$(sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9.]*\)$/\1/p' <<<"${commit_body}")"
+          source_sha="$(sed -n 's/^HMG-Source-SHA: \([0-9a-f]\{40\}\)$/\1/p' <<<"${commit_body}")"
+          expected_digest="$(sed -n 's/^HMG-Asset-Set-SHA256: \([0-9a-f]\{64\}\)$/\1/p' <<<"${commit_body}")"
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+                ! "${source_sha}" =~ ^[0-9a-f]{40}$ || \
+                ! "${expected_digest}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Promotion commit has incomplete or invalid provenance trailers"
+            exit 2
+          fi
+          if [[ ! -f candidate/VERSION || "$(tr -d '[:space:]' < candidate/VERSION)" != "${release_tag#v}" ]]; then
+            echo "::error::Candidate VERSION does not match ${release_tag}"
+            exit 2
+          fi
+          if [[ "$(jq -r '.product.version' candidate/public-manifest.json)" != "${release_tag#v}" ]]; then
+            echo "::error::public-manifest.json version does not match ${release_tag}"
+            exit 2
+          fi
+
+          release_json="$(gh release view "${release_tag}" \
+            --repo HMG-AI/HMG-public \
+            --json isDraft,tagName)"
+          if [[ "$(jq -r '.isDraft' <<<"${release_json}")" != "true" ]]; then
+            echo "::error::Promotion assets must remain in a draft release until main is updated"
+            exit 2
+          fi
+
+          readonly asset_dir="${RUNNER_TEMP}/hmg-public-draft-assets"
+          mkdir -p "${asset_dir}"
+          gh release download "${release_tag}" \
+            --repo HMG-AI/HMG-public \
+            --dir "${asset_dir}"
+          asset_manifest="$(
+            for asset in "${asset_dir}"/*; do
+              printf '%s  %s\n' \
+                "$(sha256sum "${asset}" | cut -d ' ' -f1)" \
+                "$(basename "${asset}")"
+            done | sort -k2
+          )"
+          actual_digest="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
+          if [[ "${actual_digest}" != "${expected_digest}" ]]; then
+            echo "::error::Draft release asset digest does not match the promotion commit"
+            exit 2
+          fi
+
+      - name: Run centrally governed leak and boundary checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          readonly root="candidate"
+          readonly deny_regex='one_shot_recall_engine|canonical_ingest|canonical_marker|recall_router|answer_materializer|intent_embed|intent_prototypes|topic_key|noise_gate|fusion_weight|adaptive_recall|memorize_admission|consolidation_runtime|observation_scoring|episode_planner|promotion_scoring|domain_lens_compiler|MemoryEngine|TieredStore|FjallStore'
+          readonly secret_regex='sk-[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[A-Z0-9]{16}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+
+          deny_hits="$(grep -rnE "${deny_regex}" "${root}" \
+            --include='*.rs' --include='*.toml' --include='*.yaml' \
+            --include='*.yml' --include='*.json' --include='*.ts' \
+            --include='*.py' --include='*.md' --include='*.sh' \
+            --exclude='check-export-leak.sh' 2>/dev/null || true)"
+          if [[ -n "${deny_hits}" ]]; then
+            echo "::error::Private implementation identifiers found in public candidate"
+            printf '%s\n' "${deny_hits}"
+            exit 1
+          fi
+
+          secret_hits="$(grep -rnE "${secret_regex}" "${root}" \
+            --exclude='check-export-leak.sh' --exclude-dir='.git' 2>/dev/null || true)"
+          if [[ -n "${secret_hits}" ]]; then
+            echo "::error::Credential-like material found in public candidate"
+            printf '%s\n' "${secret_hits}"
+            exit 1
+          fi
+
+          forbidden_dirs="$(find "${root}" -type d \
+            \( -name target -o -name node_modules -o -name __pycache__ \) \
+            -print -prune 2>/dev/null || true)"
+          if [[ -n "${forbidden_dirs}" ]]; then
+            echo "::error::Generated build directories found in public candidate"
+            printf '%s\n' "${forbidden_dirs}"
+            exit 1
+          fi
+
+          for forbidden_path in docs/adr docs/md/adr-classification.md; do
+            if [[ -e "${root}/${forbidden_path}" ]]; then
+              echo "::error::Internal-only path found: ${forbidden_path}"
+              exit 1
+            fi
+          done
+
+          symlinks="$(find "${root}" -path "${root}/.git" -prune -o -type l -print)"
+          if [[ -n "${symlinks}" ]]; then
+            echo "::error::Symbolic links are not allowed in the generated public surface"
+            printf '%s\n' "${symlinks}"
+            exit 1
+          fi
+          gitlinks="$(git -C "${root}" ls-files --stage | awk '$1 == "160000" {print $4}')"
+          if [[ -n "${gitlinks}" ]]; then
+            echo "::error::Git submodules are not allowed in the generated public surface"
+            printf '%s\n' "${gitlinks}"
+            exit 1
+          fi
+          oversized="$(find "${root}" -path "${root}/.git" -prune -o -type f -size +20M -print)"
+          if [[ -n "${oversized}" ]]; then
+            echo "::error::Unexpected files larger than 20 MiB found in public candidate"
+            printf '%s\n' "${oversized}"
+            exit 1
+          fi
+
+      - name: Install the public Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Test the public Rust protocol and certification crates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cargo fmt --manifest-path candidate/protocol/Cargo.toml -- --check
+          cargo fmt --manifest-path candidate/certification/Cargo.toml -- --check
+          cargo check --locked --manifest-path candidate/protocol/Cargo.toml
+          cargo check --locked --manifest-path candidate/certification/Cargo.toml
+          cargo test --locked --manifest-path candidate/protocol/Cargo.toml
+          cargo test --locked --manifest-path candidate/certification/Cargo.toml
+
+      - name: Set up Node.js for the public SDK
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: candidate/sdk-ts/package-lock.json
+
+      - name: Build the public TypeScript SDK from its lockfile
+        shell: bash
+        working-directory: candidate/sdk-ts
+        run: |
+          set -Eeuo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+
+      - name: Check public surface consistency
+        shell: bash
+        working-directory: candidate
+        run: |
+          set -Eeuo pipefail
+          bash scripts/check-public-surface-drift.sh --manifest public-manifest.json

@@ -1,0 +1,371 @@
+name: Reusable HMG Public Promotion
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Stable HMG release tag to promote, for example v1.7.6
+        required: true
+        type: string
+    secrets:
+      promotion_token:
+        description: Fine-grained token scoped to HMG-public contents and pull requests
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hmg-public-protected-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: protected-promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate caller and release input
+        shell: bash
+        env:
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_EVENT: ${{ github.event_name }}
+          CALLER_REF: ${{ github.ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          UPSTREAM_WORKFLOW: ${{ github.event.workflow_run.name || '' }}
+          UPSTREAM_EVENT: ${{ github.event.workflow_run.event || '' }}
+          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          UPSTREAM_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${CALLER_REPOSITORY}" != "HMG-AI/HMG" ]]; then
+            echo "::error::This workflow only accepts releases from HMG-AI/HMG"
+            exit 2
+          fi
+          if [[ "${CALLER_REF}" != "refs/heads/main" ]]; then
+            echo "::error::The privileged caller must run from protected HMG main"
+            exit 2
+          fi
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::release_tag must be a stable vMAJOR.MINOR.PATCH tag"
+            exit 2
+          fi
+          case "${CALLER_EVENT}" in
+            workflow_run)
+              if [[ "${UPSTREAM_WORKFLOW}" != "Build & Release" || \
+                    "${UPSTREAM_EVENT}" != "push" || \
+                    "${UPSTREAM_CONCLUSION}" != "success" || \
+                    "${UPSTREAM_HEAD_BRANCH}" != "${RELEASE_TAG}" ]]; then
+                echo "::error::Promotion requires a successful Build & Release tag-push run"
+                exit 2
+              fi
+              ;;
+            workflow_dispatch)
+              ;;
+            *)
+              echo "::error::Promotion only accepts workflow_run or trusted workflow_dispatch callers"
+              exit 2
+              ;;
+          esac
+
+      - name: Check out the reviewed HMG release
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Prove the tag belongs to protected main
+        id: source
+        shell: bash
+        env:
+          CALLER_EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          UPSTREAM_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+        run: |
+          set -Eeuo pipefail
+          source_sha="$(git -C source rev-parse HEAD)"
+          readonly source_sha
+          tag_sha="$(git -C source rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          readonly tag_sha
+          if [[ "${source_sha}" != "${tag_sha}" ]]; then
+            echo "::error::Checkout SHA does not match ${RELEASE_TAG}"
+            exit 2
+          fi
+          if [[ "${CALLER_EVENT}" == "workflow_run" && "${source_sha}" != "${UPSTREAM_HEAD_SHA}" ]]; then
+            echo "::error::The release tag moved after the successful upstream workflow"
+            exit 2
+          fi
+          git -C source fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git -C source merge-base --is-ancestor "${source_sha}" refs/remotes/origin/main; then
+            echo "::error::${RELEASE_TAG} is not reachable from HMG-AI/HMG main"
+            exit 2
+          fi
+          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out the protected target base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: HMG-AI/HMG-public
+          ref: main
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+
+      - name: Install the HMG public Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Build the exact public candidate without credentials
+        shell: bash
+        env:
+          HMG_PUBLIC_BASE_BRANCH: main
+          HMG_RELEASE_TAG: ${{ inputs.release_tag }}
+          HMG_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          bash source/scripts/sync-export.sh \
+            --target-dir="${GITHUB_WORKSPACE}/candidate"
+
+      - name: Enforce target-owned governance boundary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          readonly protected_paths=(
+            .github
+            commitlint.config.mjs
+          )
+          if ! git -C candidate diff --quiet -- "${protected_paths[@]}"; then
+            echo "::error::Public promotion attempted to modify target-owned governance files"
+            git -C candidate diff --name-status -- "${protected_paths[@]}"
+            exit 2
+          fi
+          for required_file in \
+            .github/CODEOWNERS \
+            .github/workflows/commitlint.yml \
+            .github/workflows/commitlint-approval.yml \
+            commitlint.config.mjs; do
+            if [[ ! -f "candidate/${required_file}" ]]; then
+              echo "::error::Required target-owned file is missing: ${required_file}"
+              exit 2
+            fi
+          done
+
+      - name: Download and validate private release assets without target credentials
+        id: assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -Eeuo pipefail
+          readonly asset_dir="${RUNNER_TEMP}/hmg-source-release-assets"
+          mkdir -p "${asset_dir}"
+          gh release download "${RELEASE_TAG}" \
+            --repo HMG-AI/HMG \
+            --dir "${asset_dir}"
+
+          for required_asset in SHA256SUMS.txt install.sh install.ps1 version.json; do
+            if [[ ! -f "${asset_dir}/${required_asset}" ]]; then
+              echo "::error::Private release is missing ${required_asset}"
+              exit 2
+            fi
+          done
+          package_count="$(find "${asset_dir}" -maxdepth 1 -type f \
+            \( -name 'hmg-*.tar.gz' -o -name 'hmg-*.zip' \) | wc -l)"
+          if (( package_count != 6 )); then
+            echo "::error::Expected six platform packages, found ${package_count}"
+            exit 2
+          fi
+          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${RELEASE_TAG}" ]]; then
+            echo "::error::version.json tag does not match ${RELEASE_TAG}"
+            exit 2
+          fi
+
+          asset_manifest="$(
+            for asset in "${asset_dir}"/*; do
+              printf '%s  %s\n' \
+                "$(sha256sum "${asset}" | cut -d ' ' -f1)" \
+                "$(basename "${asset}")"
+            done | sort -k2
+          )"
+          printf '%s\n' "${asset_manifest}" > "${RUNNER_TEMP}/hmg-source-assets.sha256"
+          asset_set_sha256="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
+          echo "asset_dir=${asset_dir}" >> "${GITHUB_OUTPUT}"
+          echo "asset_set_sha256=${asset_set_sha256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update the protected promotion pull request
+        id: promote
+        shell: bash
+        working-directory: candidate
+        env:
+          GH_TOKEN: ${{ secrets.promotion_token }}
+          ASSET_DIR: ${{ steps.assets.outputs.asset_dir }}
+          ASSET_SET_SHA256: ${{ steps.assets.outputs.asset_set_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TARGET_REPOSITORY: HMG-AI/HMG-public
+          TARGET_BASE: main
+          WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -Eeuo pipefail
+          test -n "${GH_TOKEN:-}" || { echo "::error::promotion_token is required"; exit 2; }
+
+          readonly head_branch="release/hmg-public/${RELEASE_TAG}"
+          readonly expected_owner="HMG-AI"
+
+          git config user.name "HMG Release Automation"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          latest_commit="$(git log -100 --format=%H --grep='^HMG-Source-Tag:' -n 1)"
+          latest_tag=""
+          latest_sha=""
+          if [[ -n "${latest_commit}" ]]; then
+            latest_body="$(git show -s --format=%B "${latest_commit}")"
+            # shellcheck disable=SC2016
+            latest_tag="$(sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9.]*\)$/\1/p' <<<"${latest_body}")"
+            # shellcheck disable=SC2016
+            latest_sha="$(sed -n 's/^HMG-Source-SHA: \([0-9a-f]\{40\}\)$/\1/p' <<<"${latest_body}")"
+          fi
+          if [[ -n "${latest_tag}" ]]; then
+            highest_tag="$(printf '%s\n%s\n' "${latest_tag}" "${RELEASE_TAG}" | sort -V | tail -n 1)"
+            if [[ "${highest_tag}" != "${RELEASE_TAG}" ]]; then
+              echo "::error::Refusing to replay ${RELEASE_TAG} over newer ${latest_tag}"
+              exit 2
+            fi
+            if [[ "${latest_tag}" == "${RELEASE_TAG}" && "${latest_sha}" != "${SOURCE_SHA}" ]]; then
+              echo "::error::${RELEASE_TAG} was previously promoted from a different source SHA"
+              exit 2
+            fi
+            if [[ "${latest_tag}" == "${RELEASE_TAG}" && "${latest_sha}" == "${SOURCE_SHA}" ]]; then
+              echo "${RELEASE_TAG} already has an immutable promotion commit on main."
+              echo "status=already-promoted" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          fi
+
+          other_prs="$(gh api \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${TARGET_REPOSITORY}/pulls?state=open&base=${TARGET_BASE}&per_page=100" \
+            --jq ".[] | select(.head.repo.full_name == \"${TARGET_REPOSITORY}\") | select(.head.ref | startswith(\"release/hmg-public/\")) | select(.head.ref != \"${head_branch}\") | .html_url")"
+          if [[ -n "${other_prs}" ]]; then
+            echo "::error::Another HMG public promotion is still open: ${other_prs}"
+            exit 2
+          fi
+
+          pr_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${TARGET_REPOSITORY}/pulls?state=all&head=${expected_owner}:${head_branch}&base=${TARGET_BASE}&per_page=20")"
+          pr_count="$(jq 'length' <<<"${pr_json}")"
+          if (( pr_count > 1 )); then
+            echo "::error::More than one pull request exists for ${head_branch}"
+            exit 2
+          fi
+          pr_state="$(jq -r '.[0].state // empty' <<<"${pr_json}")"
+          pr_merged="$(jq -r '.[0].merged_at // empty' <<<"${pr_json}")"
+          pr_number="$(jq -r '.[0].number // empty' <<<"${pr_json}")"
+
+          if [[ "${pr_state}" == "closed" ]]; then
+            if [[ -n "${pr_merged}" ]]; then
+              echo "::error::Merged promotion ${pr_number} no longer matches the deterministic candidate"
+            else
+              echo "::error::Promotion PR ${pr_number} was closed without merging; manual triage is required"
+            fi
+            exit 2
+          fi
+
+          git add -A
+          printf -v commit_body '%s\n%s\n%s\n%s\n%s' \
+            'HMG-Source-Repository: HMG-AI/HMG' \
+            "HMG-Source-Tag: ${RELEASE_TAG}" \
+            "HMG-Source-SHA: ${SOURCE_SHA}" \
+            "HMG-Workflow-Run: ${WORKFLOW_RUN_URL}" \
+            "HMG-Asset-Set-SHA256: ${ASSET_SET_SHA256}"
+          git commit \
+            --allow-empty \
+            -m "chore(public): promote HMG ${RELEASE_TAG}" \
+            -m "${commit_body}"
+          candidate_sha="$(git rev-parse HEAD)"
+          readonly candidate_sha
+
+          remote_oid="$(git ls-remote origin "refs/heads/${head_branch}" | cut -f1)"
+          if [[ -n "${remote_oid}" ]]; then
+            git fetch --no-tags origin "refs/heads/${head_branch}:refs/remotes/origin/hmg-public-promotion"
+            remote_body="$(git show -s --format=%B refs/remotes/origin/hmg-public-promotion)"
+            if ! grep -Fxq "HMG-Source-Tag: ${RELEASE_TAG}" <<<"${remote_body}" || \
+               ! grep -Fxq "HMG-Source-SHA: ${SOURCE_SHA}" <<<"${remote_body}"; then
+              echo "::error::Existing branch ${head_branch} has conflicting provenance"
+              exit 2
+            fi
+          fi
+
+          release_json="$(gh release view "${RELEASE_TAG}" \
+            --repo "${TARGET_REPOSITORY}" \
+            --json isDraft,url 2>/dev/null || true)"
+          if [[ -z "${release_json}" ]]; then
+            gh release create "${RELEASE_TAG}" \
+              --repo "${TARGET_REPOSITORY}" \
+              --target "${TARGET_BASE}" \
+              --title "HMG ${RELEASE_TAG}" \
+              --notes "Draft assets for protected HMG public promotion ${RELEASE_TAG}." \
+              --draft
+          elif [[ "$(jq -r '.isDraft' <<<"${release_json}")" != "true" ]]; then
+            echo "::error::Public release ${RELEASE_TAG} is already published before its promotion PR merged"
+            exit 2
+          fi
+          for asset in "${ASSET_DIR}"/*; do
+            gh release upload "${RELEASE_TAG}" "${asset}" \
+              --repo "${TARGET_REPOSITORY}" \
+              --clobber
+          done
+
+          gh auth setup-git
+          git push \
+            --force-with-lease="refs/heads/${head_branch}:${remote_oid}" \
+            origin "HEAD:refs/heads/${head_branch}"
+
+          readonly pr_title="chore(public): promote HMG ${RELEASE_TAG}"
+          # shellcheck disable=SC2016
+          printf -v pr_body '%s\n\n%s\n%s\n%s\n%s\n%s\n\n%s' \
+            'Automated protected promotion from the reviewed HMG release.' \
+            '- Source repository: `HMG-AI/HMG`' \
+            "- Source tag: \`${RELEASE_TAG}\`" \
+            "- Source SHA: \`${SOURCE_SHA}\`" \
+            "- Orchestrator run: ${WORKFLOW_RUN_URL}" \
+            "- Draft asset set SHA-256: \`${ASSET_SET_SHA256}\`" \
+            'This pull request must pass the organization and HMG-public quality gates and receive an eligible human CODEOWNER approval. Automation has no bypass or approval authority.'
+          readonly pr_body
+
+          if [[ "${pr_state}" == "open" ]]; then
+            gh pr edit "${pr_number}" \
+              --repo "${TARGET_REPOSITORY}" \
+              --title "${pr_title}" \
+              --body "${pr_body}"
+          else
+            pr_url="$(gh pr create \
+              --repo "${TARGET_REPOSITORY}" \
+              --base "${TARGET_BASE}" \
+              --head "${head_branch}" \
+              --title "${pr_title}" \
+              --body "${pr_body}")"
+            pr_number="${pr_url##*/}"
+          fi
+
+          gh pr merge "${pr_number}" \
+            --repo "${TARGET_REPOSITORY}" \
+            --auto \
+            --rebase \
+            --match-head-commit "${candidate_sha}"
+
+          readonly pr_url="https://github.com/${TARGET_REPOSITORY}/pull/${pr_number}"
+          echo "status=waiting-for-gates-and-review" >> "${GITHUB_OUTPUT}"
+          echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### HMG public promotion"
+            echo
+            echo "- Status: waiting for required gates and human CODEOWNER approval"
+            echo "- Pull request: ${pr_url}"
+            echo "- Source: HMG-AI/HMG@${SOURCE_SHA} (${RELEASE_TAG})"
+            echo "- Candidate: ${candidate_sha}"
+          } >> "${GITHUB_STEP_SUMMARY}"

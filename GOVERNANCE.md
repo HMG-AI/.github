@@ -19,6 +19,8 @@ Pull requests require current-head automated checks, current human approval, res
 
 Release authority belongs to the release-manager team for the repository. Production credentials use GitHub environments or OIDC, never repository files. A release must have a traceable source commit/tag, validation evidence, release notes, and a rollback path.
 
+Automation is subject to the same protected-default-branch policy as people. Cross-repository publication creates or updates a deterministic branch in the target repository, opens a same-repository pull request, and may enable auto-merge without approving or bypassing the pull request. The write credential is scoped to the target repository and is exposed only to the final branch/pull-request step; validation runs without it. Generated publication must preserve target-owned governance paths such as `.github/` and commit-policy configuration.
+
 ## Emergency changes
 
 Emergency bypass is exceptional, time-bounded, and audited. The incident lead must record the severity, reason ordinary review cannot be completed, exact change, approver, validation, rollback, and follow-up issue. The bypass is removed immediately after recovery; a retrospective pull request restores normal evidence and review.
