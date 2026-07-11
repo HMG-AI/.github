@@ -1,0 +1,11 @@
+name: Runner group on an untrusted event
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on:
+      group: production-runners
+      labels: ubuntu-24.04
+    steps:
+      - run: "true"

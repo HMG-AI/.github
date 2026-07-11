@@ -1,0 +1,12 @@
+name: Matrix-selected runner
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - run: "true"
