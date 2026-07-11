@@ -33,7 +33,13 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ inputs.base_sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref || '' }}
+          EVENT_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
+          EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_REF: ${{ inputs.head_ref }}
           TARGET_REPOSITORY: ${{ github.repository }}
         run: |
           set -Eeuo pipefail
@@ -49,6 +55,26 @@ jobs:
               exit 2
             fi
           done
+          case "${EVENT_NAME}" in
+            pull_request|merge_group)
+              ;;
+            *)
+              echo "::error::HMG-public quality only accepts pull_request or merge_group"
+              exit 2
+              ;;
+          esac
+          if [[ "${BASE_SHA}" != "${EVENT_BASE_SHA}" || \
+                "${HEAD_SHA}" != "${EVENT_HEAD_SHA}" || \
+                "${HEAD_REF}" != "${EVENT_HEAD_REF}" ]]; then
+            echo "::error::Reusable quality inputs do not match the immutable event payload"
+            exit 2
+          fi
+          if [[ "${EVENT_NAME}" == "pull_request" && \
+                "${HEAD_REF}" == release/hmg-public/v* && \
+                "${EVENT_HEAD_REPOSITORY}" != "${TARGET_REPOSITORY}" ]]; then
+            echo "::error::Automated promotion branches must belong to HMG-AI/HMG-public"
+            exit 2
+          fi
 
       - name: Check out the candidate with full history
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -58,56 +84,228 @@ jobs:
           path: candidate
           persist-credentials: false
 
-      - name: Protect target-owned governance during automated promotion
+      - name: Classify governed promotion commits in the event range
+        id: promotion
         shell: bash
         env:
           BASE_SHA: ${{ inputs.base_sha }}
+          EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ inputs.head_sha }}
           HEAD_REF: ${{ inputs.head_ref }}
         run: |
           set -Eeuo pipefail
-          if [[ "${HEAD_REF}" == release/hmg-public/v* ]]; then
-            changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
-              .github commitlint.config.mjs)"
-            if [[ -n "${changed}" ]]; then
-              echo "::error::Automated promotion cannot change target-owned governance files"
-              printf '%s\n' "${changed}"
+          if ! git -C candidate cat-file -e "${BASE_SHA}^{commit}" || \
+             ! git -C candidate cat-file -e "${HEAD_SHA}^{commit}" || \
+             [[ "$(git -C candidate rev-parse HEAD)" != "${HEAD_SHA}" ]]; then
+            echo "::error::The event commits are not available in the checked-out repository"
+            exit 2
+          fi
+          if [[ "${EVENT_NAME}" == "merge_group" ]] && \
+             ! git -C candidate merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
+            echo "::error::Merge-group head must descend from its immutable event base"
+            exit 2
+          fi
+
+          range_commits="${RUNNER_TEMP}/hmg-public-event-range-commits.txt"
+          hmg_commits="${RUNNER_TEMP}/hmg-public-event-hmg-commits.txt"
+          git -C candidate rev-list --reverse "${BASE_SHA}..${HEAD_SHA}" > "${range_commits}"
+          : > "${hmg_commits}"
+          while IFS= read -r commit_sha; do
+            parsed_trailers="$(
+              git -C candidate show -s --format=%B "${commit_sha}" \
+                | git interpret-trailers --parse
+            )"
+            if grep -q '^HMG-' <<<"${parsed_trailers}"; then
+              printf '%s\n' "${commit_sha}" >> "${hmg_commits}"
+            fi
+          done < "${range_commits}"
+          hmg_commit_count="$(wc -l < "${hmg_commits}")"
+
+          is_promotion=false
+          promotion_commit=''
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            if [[ "${HEAD_REF}" == release/hmg-public/v* ]]; then
+              if ((hmg_commit_count > 1)) || \
+                 ((hmg_commit_count == 1)) && \
+                 [[ "$(tr -d '[:space:]' < "${hmg_commits}")" != "${HEAD_SHA}" ]]; then
+                echo "::error::A release pull request must have exactly one possible promotion commit at HEAD"
+                exit 2
+              fi
+              is_promotion=true
+              promotion_commit="${HEAD_SHA}"
+            elif ((hmg_commit_count != 0)); then
+              echo "::error::HMG provenance trailers are forbidden outside the deterministic release branch"
               exit 2
             fi
+          elif ((hmg_commit_count == 1)); then
+            is_promotion=true
+            promotion_commit="$(tr -d '[:space:]' < "${hmg_commits}")"
+          elif ((hmg_commit_count > 1)); then
+            echo "::error::A merge group may contain exactly one governed HMG promotion commit"
+            exit 2
+          fi
+          echo "is_promotion=${is_promotion}" >> "${GITHUB_OUTPUT}"
+          if [[ "${is_promotion}" == "true" ]]; then
+            echo "commit_sha=${promotion_commit}" >> "${GITHUB_OUTPUT}"
+          fi
 
-            base_version="$(tr -d '[:space:]' < <(git -C candidate show "${BASE_SHA}:VERSION"))"
-            head_version="$(tr -d '[:space:]' < candidate/VERSION)"
-            highest_version="$(printf '%s\n%s\n' "${base_version}" "${head_version}" | sort -V | tail -n 1)"
-            if [[ "${highest_version}" != "${head_version}" || "${head_version}" == "${base_version}" ]]; then
-              echo "::error::Promotion VERSION ${head_version} must be newer than base ${base_version}"
+      - name: Protect target-owned governance during governed promotion
+        if: steps.promotion.outputs.is_promotion == 'true'
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            release_tag="${HEAD_REF#release/hmg-public/}"
+            if [[ ! "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::Promotion branch must end in a canonical stable SemVer tag"
+              exit 2
+            fi
+            if [[ "$(git -C candidate rev-parse 'HEAD^')" != "${BASE_SHA}" || \
+                  "$(git -C candidate rev-list --count "${BASE_SHA}..${HEAD_SHA}")" != "1" ]]; then
+              echo "::error::Automated promotion pull request must be exactly one commit on the event base"
               exit 2
             fi
           fi
+          changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+            .github commitlint.config.mjs)"
+          if [[ -n "${changed}" ]]; then
+            echo "::error::Automated promotion cannot change target-owned governance files"
+            printf '%s\n' "${changed}"
+            exit 2
+          fi
 
-      - name: Verify promotion provenance and draft release assets
-        if: startsWith(inputs.head_ref, 'release/hmg-public/v')
+      - name: Verify signed promotion provenance and final-tag absence
+        if: steps.promotion.outputs.is_promotion == 'true'
         shell: bash
         env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ inputs.head_sha }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          PROMOTION_COMMIT: ${{ steps.promotion.outputs.commit_sha }}
         run: |
           set -Eeuo pipefail
-          commit_body="$(git -C candidate show -s --format=%B "${HEAD_SHA}")"
-          source_repository="$(sed -n 's/^HMG-Source-Repository: \(HMG-AI\/HMG\)$/\1/p' <<<"${commit_body}")"
-          release_tag="$(sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9.]*\)$/\1/p' <<<"${commit_body}")"
-          source_sha="$(sed -n 's/^HMG-Source-SHA: \([0-9a-f]\{40\}\)$/\1/p' <<<"${commit_body}")"
-          workflow_run="$(sed -n 's#^HMG-Workflow-Run: \(https://github\.com/HMG-AI/HMG/actions/runs/[1-9][0-9]*\)$#\1#p' <<<"${commit_body}")"
-          expected_digest="$(sed -n 's/^HMG-Asset-Set-SHA256: \([0-9a-f]\{64\}\)$/\1/p' <<<"${commit_body}")"
+          readonly key_id_allowlist='ed25519-spki-sha256-10a79fee35f78fbe9542c7a9b639e564dd6c99c7068c7fb3b230084dca670fe2'
+          trailer_file="${RUNNER_TEMP}/hmg-public-quality-trailers.txt"
+          git -C candidate show -s --format=%B "${PROMOTION_COMMIT}" \
+            | git interpret-trailers --parse > "${trailer_file}"
+          expected_trailer_keys="${RUNNER_TEMP}/hmg-public-expected-trailer-keys.txt"
+          actual_trailer_keys="${RUNNER_TEMP}/hmg-public-actual-trailer-keys.txt"
+          printf '%s\n' \
+            HMG-Asset-Set-SHA256 \
+            HMG-Candidate-Tree \
+            HMG-Provenance-Key-ID \
+            HMG-Provenance-Signature-Ed25519 \
+            HMG-Source-Repository \
+            HMG-Source-SHA \
+            HMG-Source-Tag \
+            HMG-Workflow-Run \
+            | LC_ALL=C sort > "${expected_trailer_keys}"
+          sed -n 's/^\([^:][^:]*\): .*/\1/p' "${trailer_file}" \
+            | LC_ALL=C sort > "${actual_trailer_keys}"
+          if [[ "$(wc -l < "${trailer_file}")" != "8" ]] || \
+             ! diff -u "${expected_trailer_keys}" "${actual_trailer_keys}"; then
+            echo "::error::Promotion commit must contain exactly the eight governed provenance trailers"
+            exit 2
+          fi
+          source_repository="$(sed -n 's/^HMG-Source-Repository: \(HMG-AI\/HMG\)$/\1/p' "${trailer_file}")"
+          release_tag="$(sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' "${trailer_file}")"
+          source_sha="$(sed -n 's/^HMG-Source-SHA: \([0-9a-f]\{40\}\)$/\1/p' "${trailer_file}")"
+          workflow_run="$(sed -n 's#^HMG-Workflow-Run: \(https://github\.com/HMG-AI/HMG/actions/runs/[1-9][0-9]*\)$#\1#p' "${trailer_file}")"
+          expected_digest="$(sed -n 's/^HMG-Asset-Set-SHA256: \([0-9a-f]\{64\}\)$/\1/p' "${trailer_file}")"
+          candidate_tree="$(sed -n 's/^HMG-Candidate-Tree: \(sha1:[0-9a-f]\{40\}\|sha256:[0-9a-f]\{64\}\)$/\1/p' "${trailer_file}")"
+          key_id="$(sed -n 's/^HMG-Provenance-Key-ID: \(ed25519-spki-sha256-[0-9a-f]\{64\}\)$/\1/p' "${trailer_file}")"
+          provenance_signature="$(sed -n 's/^HMG-Provenance-Signature-Ed25519: \([A-Za-z0-9+/]\{86\}==\)$/\1/p' "${trailer_file}")"
           if [[ "${source_repository}" != "HMG-AI/HMG" || \
-                ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+                ! "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || \
                 ! "${source_sha}" =~ ^[0-9a-f]{40}$ || \
                 ! "${workflow_run}" =~ ^https://github\.com/HMG-AI/HMG/actions/runs/[1-9][0-9]*$ || \
-                ! "${expected_digest}" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Promotion commit has incomplete or invalid provenance trailers"
+                ! "${expected_digest}" =~ ^[0-9a-f]{64}$ || \
+                ! "${candidate_tree}" =~ ^(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$ || \
+                "${key_id}" != "${key_id_allowlist}" || \
+                ! "${provenance_signature}" =~ ^[A-Za-z0-9+/]{86}==$ ]]; then
+            echo "::error::Promotion commit contains an invalid governed provenance value"
+            exit 2
+          fi
+          if [[ "${EVENT_NAME}" == "pull_request" && \
+                "${HEAD_REF}" != "release/hmg-public/${release_tag}" ]]; then
+            echo "::error::Promotion branch and signed source tag do not match"
+            exit 2
+          fi
+
+          actual_candidate_tree="$(git -C candidate rev-parse --show-object-format):$(git -C candidate rev-parse "${HEAD_SHA}^{tree}")"
+          if [[ "${actual_candidate_tree}" != "${candidate_tree}" ]]; then
+            echo "::error::Candidate Git tree does not match the signed provenance"
+            exit 2
+          fi
+          key_file="candidate/.github/provenance-keys/${key_id}.pem"
+          if [[ ! -f "${key_file}" ]]; then
+            echo "::error::The centrally reviewed provenance public key is missing"
+            exit 2
+          fi
+          public_key_fingerprint="$(
+            /usr/bin/openssl pkey \
+              -pubin \
+              -in "${key_file}" \
+              -outform DER 2>/dev/null \
+              | sha256sum \
+              | cut -d ' ' -f1
+          )"
+          if [[ "${key_id}" != "ed25519-spki-sha256-${public_key_fingerprint}" ]]; then
+            echo "::error::Promotion provenance public key does not match the reviewed key ID"
+            exit 2
+          fi
+          provenance_statement="${RUNNER_TEMP}/hmg-public-provenance-v1.txt"
+          provenance_signature_file="${RUNNER_TEMP}/hmg-public-provenance-v1.sig"
+          printf '%s\n' \
+            'HMG-PUBLIC-PROVENANCE-V1' \
+            'source-repository=HMG-AI/HMG' \
+            "source-tag=${release_tag}" \
+            "source-sha=${source_sha}" \
+            "workflow-run=${workflow_run}" \
+            "asset-set-sha256=${expected_digest}" \
+            "candidate-tree=${candidate_tree}" \
+            'target-repository=HMG-AI/HMG-public' \
+            'target-branch=main' \
+            "key-id=${key_id}" \
+            > "${provenance_statement}"
+          if ! printf '%s' "${provenance_signature}" \
+              | /usr/bin/openssl base64 -d -A -out "${provenance_signature_file}" || \
+             [[ "$(wc -c < "${provenance_signature_file}")" != "64" ]]; then
+            echo "::error::Promotion provenance signature is not canonical Ed25519"
+            exit 2
+          fi
+          if ! /usr/bin/openssl pkeyutl \
+              -verify \
+              -pubin \
+              -inkey "${key_file}" \
+              -rawin \
+              -in "${provenance_statement}" \
+              -sigfile "${provenance_signature_file}"; then
+            echo "::error::Promotion provenance signature is not trusted"
             exit 2
           fi
           if [[ ! -f candidate/VERSION || "$(tr -d '[:space:]' < candidate/VERSION)" != "${release_tag#v}" ]]; then
             echo "::error::Candidate VERSION does not match ${release_tag}"
+            exit 2
+          fi
+          base_version="$(tr -d '[:space:]' < <(git -C candidate show "${BASE_SHA}:VERSION"))"
+          head_version="$(tr -d '[:space:]' < candidate/VERSION)"
+          if [[ ! "${base_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || \
+                ! "${head_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Promotion base and candidate VERSION must use canonical stable SemVer"
+            exit 2
+          fi
+          highest_version="$(printf '%s\n%s\n' "${base_version}" "${head_version}" | LC_ALL=C sort -V | tail -n 1)"
+          if [[ "${highest_version}" != "${head_version}" || \
+                "${head_version}" == "${base_version}" ]]; then
+            echo "::error::Promotion VERSION ${head_version} must be newer than base ${base_version}"
             exit 2
           fi
           if [[ "$(jq -r '.product.version' candidate/public-manifest.json)" != "${release_tag#v}" ]]; then
@@ -115,71 +313,21 @@ jobs:
             exit 2
           fi
 
-          release_json="$(gh release view "${release_tag}" \
-            --repo HMG-AI/HMG-public \
-            --json isDraft,tagName)"
-          if [[ "$(jq -r '.isDraft' <<<"${release_json}")" != "true" ]]; then
-            echo "::error::Promotion assets must remain in a draft release until main is updated"
+          set +e
+          final_tag_response="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/HMG-AI/HMG-public/git/ref/tags/${release_tag}" \
+            2>&1)"
+          final_tag_rc=$?
+          set -e
+          if ((final_tag_rc == 0)); then
+            echo "::error::Final public tag ${release_tag} must not exist before merge"
             exit 2
           fi
-
-          readonly asset_dir="${RUNNER_TEMP}/hmg-public-draft-assets"
-          mkdir -p "${asset_dir}"
-          gh release download "${release_tag}" \
-            --repo HMG-AI/HMG-public \
-            --dir "${asset_dir}"
-          readonly version="${release_tag#v}"
-          readonly expected_packages=(
-            "hmg-${version}-aarch64-apple-darwin.tar.gz"
-            "hmg-${version}-aarch64-pc-windows-msvc.zip"
-            "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz"
-            "hmg-${version}-x86_64-apple-darwin.tar.gz"
-            "hmg-${version}-x86_64-pc-windows-msvc.zip"
-            "hmg-${version}-x86_64-unknown-linux-gnu.tar.gz"
-          )
-          readonly expected_assets=(
-            "${expected_packages[@]}"
-            SHA256SUMS.txt
-            install.ps1
-            install.sh
-            version.json
-          )
-          expected_asset_list="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
-          actual_asset_list="$(find "${asset_dir}" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
-          if [[ "${actual_asset_list}" != "${expected_asset_list}" ]]; then
-            echo "::error::Draft release must contain exactly the ten governed assets"
-            exit 2
-          fi
-          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${release_tag}" || \
-                "$(jq -r '.version' "${asset_dir}/version.json")" != "${version}" ]]; then
-            echo "::error::Draft version.json does not match ${release_tag}"
-            exit 2
-          fi
-          if ! awk 'NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ {next} {exit 1}' \
-              "${asset_dir}/SHA256SUMS.txt"; then
-            echo "::error::SHA256SUMS.txt must contain strict lowercase SHA-256 records"
-            exit 2
-          fi
-          expected_package_list="$(printf '%s\n' "${expected_packages[@]}" | LC_ALL=C sort)"
-          checksum_package_list="$(awk '{print $2}' "${asset_dir}/SHA256SUMS.txt" | sed 's/^\*//' | LC_ALL=C sort)"
-          if [[ "${checksum_package_list}" != "${expected_package_list}" ]]; then
-            echo "::error::SHA256SUMS.txt must cover exactly the six governed packages"
-            exit 2
-          fi
-          if ! (cd "${asset_dir}" && sha256sum --check --strict SHA256SUMS.txt); then
-            echo "::error::Draft release package checksum verification failed"
-            exit 2
-          fi
-          asset_manifest="$(
-            for asset in "${asset_dir}"/*; do
-              printf '%s  %s\n' \
-                "$(sha256sum "${asset}" | cut -d ' ' -f1)" \
-                "$(basename "${asset}")"
-            done | LC_ALL=C sort -k2
-          )"
-          actual_digest="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
-          if [[ "${actual_digest}" != "${expected_digest}" ]]; then
-            echo "::error::Draft release asset digest does not match the promotion commit"
+          if ! grep -Eq '\(HTTP 404\)|HTTP/[0-9.]+ 404' <<<"${final_tag_response}"; then
+            echo "::error::Unable to prove that final public tag ${release_tag} is absent"
+            printf '%s\n' "${final_tag_response}"
             exit 2
           fi
 
@@ -305,3 +453,36 @@ jobs:
         run: |
           set -Eeuo pipefail
           bash scripts/check-public-surface-drift.sh --manifest public-manifest.json
+
+      - name: Self-test target-owned release policy scripts
+        shell: bash
+        working-directory: candidate
+        run: |
+          set -Eeuo pipefail
+          readonly required_policy_scripts=(
+            .github/scripts/classify-promoted-release.sh
+            .github/scripts/publish-promoted-release.sh
+            .github/scripts/test-classify-promoted-release.sh
+            .github/scripts/test-publisher-policy.sh
+          )
+          for policy_script in "${required_policy_scripts[@]}"; do
+            if [[ ! -f "${policy_script}" || -L "${policy_script}" ]]; then
+              echo "::error::Required target-owned release policy script is missing or unsafe: ${policy_script}"
+              exit 2
+            fi
+          done
+          mapfile -d '' policy_scripts < <(
+            find .github/scripts \
+              -maxdepth 1 \
+              -type f \
+              -name '*.sh' \
+              -print0 \
+              | LC_ALL=C sort -z
+          )
+          if ((${#policy_scripts[@]} == 0)); then
+            echo "::error::No target-owned release policy scripts were found"
+            exit 2
+          fi
+          shellcheck "${policy_scripts[@]}"
+          bash .github/scripts/test-classify-promoted-release.sh
+          bash .github/scripts/test-publisher-policy.sh
