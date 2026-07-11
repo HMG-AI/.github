@@ -1,0 +1,66 @@
+name: Feature request
+description: Propose a user-visible capability or meaningful enhancement
+title: "[Feature]: "
+labels:
+  - "type: feature"
+  - "status: triage"
+projects:
+  - "HMG-AI/1"
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues, discussions, and pull requests.
+          required: true
+        - label: I can describe the user problem independently of a preferred implementation.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who has the problem, in what situation, and what outcome is currently blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior and success criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include current workarounds and why they are insufficient.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and compatibility
+      description: Affected repositories, APIs, data, platforms, editions, migrations, or integrations.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: dropdown
+    id: value
+    attributes:
+      label: Expected value
+      options:
+        - Critical customer or security need
+        - Major product or operational improvement
+        - Useful incremental improvement
+        - Exploratory idea
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and non-goals

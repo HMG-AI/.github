@@ -1,0 +1,6 @@
+{
+  "name": "HMG required commit lint",
+  "description": "Validate every commit on each pull-request head and merge-queue group with the pinned HMG-AI policy.",
+  "iconName": "octicon git-commit",
+  "categories": ["Continuous integration"]
+}

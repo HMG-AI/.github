@@ -1,0 +1,9 @@
+* @HMG-AI/core-maintainers
+
+/.github/ @HMG-AI/core-maintainers @HMG-AI/security-managers
+/governance/ @HMG-AI/core-maintainers @HMG-AI/security-managers
+/scripts/ @HMG-AI/core-maintainers @HMG-AI/security-managers
+/SECURITY.md @HMG-AI/security-managers
+/CODE_OF_CONDUCT.md @HMG-AI/core-maintainers @HMG-AI/security-managers
+/docs/ @HMG-AI/docs-maintainers @HMG-AI/core-maintainers
+/profile/ @HMG-AI/docs-maintainers

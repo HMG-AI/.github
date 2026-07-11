@@ -1,0 +1,6 @@
+{
+  "name": "HMG approval-time commit audit",
+  "description": "Rerun the HMG commit-message policy when a pull-request approval is submitted.",
+  "iconName": "octicon approved",
+  "categories": ["Code review"]
+}

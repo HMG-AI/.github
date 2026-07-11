@@ -1,0 +1,49 @@
+name: Engineering task
+description: Track defined implementation, maintenance, documentation, or operational work
+title: "[Task]: "
+labels:
+  - "type: task"
+  - "status: triage"
+projects:
+  - "HMG-AI/1"
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why is this work needed now? Link its parent issue, decision, incident, or release.
+    validations:
+      required: true
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: Deliverable
+      description: State the concrete end state, not only the activity.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] Implementation or configuration is complete.
+        - [ ] Required validation passes.
+        - [ ] Documentation and rollout are complete.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Commands, checks, screenshots, API evidence, or production signals that prove completion.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks, dependencies, and rollback
+  - type: input
+    id: target
+    attributes:
+      label: Target release or date
+      placeholder: v1.3, 2026-Q3, or YYYY-MM-DD

@@ -1,0 +1,26 @@
+schema_version: 1
+labels:
+  - {name: "type: bug", color: "d73a4a", description: "A reproducible defect or regression"}
+  - {name: "type: feature", color: "a2eeef", description: "A user-visible capability or enhancement"}
+  - {name: "type: task", color: "1d76db", description: "Defined engineering or operational work"}
+  - {name: "type: docs", color: "0075ca", description: "Documentation-only work"}
+  - {name: "type: security", color: "b60205", description: "Security hardening or disclosed remediation"}
+  - {name: "type: dependencies", color: "0366d6", description: "Dependency or supply-chain update"}
+  - {name: "status: triage", color: "ededed", description: "Needs initial classification and ownership"}
+  - {name: "status: ready", color: "0e8a16", description: "Acceptance criteria are ready for implementation"}
+  - {name: "status: in progress", color: "fbca04", description: "Actively being implemented"}
+  - {name: "status: blocked", color: "b60205", description: "Cannot progress without a dependency or decision"}
+  - {name: "status: needs review", color: "5319e7", description: "Ready for technical or product review"}
+  - {name: "priority: P0", color: "b60205", description: "Critical incident, security, or business impact"}
+  - {name: "priority: P1", color: "d93f0b", description: "High priority with near-term delivery need"}
+  - {name: "priority: P2", color: "fbca04", description: "Normal planned priority"}
+  - {name: "priority: P3", color: "c5def5", description: "Low-priority or opportunistic work"}
+  - {name: "area: core", color: "0052cc", description: "HMG core or memory runtime"}
+  - {name: "area: backend", color: "1d76db", description: "Backend, API, cloud, or service work"}
+  - {name: "area: frontend", color: "7057ff", description: "Web or administrative frontend work"}
+  - {name: "area: desktop", color: "006b75", description: "Desktop application work"}
+  - {name: "area: docs", color: "0075ca", description: "Documentation and public content"}
+  - {name: "area: benchmark", color: "bfdadc", description: "Evaluation and benchmark work"}
+  - {name: "area: governance", color: "5319e7", description: "Organization policy, Actions, or repository governance"}
+  - {name: "risk: high", color: "d93f0b", description: "Requires explicit risk and rollback review"}
+  - {name: "breaking change", color: "b60205", description: "Requires a compatibility or migration plan"}
