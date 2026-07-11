@@ -93,11 +93,15 @@ jobs:
         run: |
           set -Eeuo pipefail
           commit_body="$(git -C candidate show -s --format=%B "${HEAD_SHA}")"
+          source_repository="$(sed -n 's/^HMG-Source-Repository: \(HMG-AI\/HMG\)$/\1/p' <<<"${commit_body}")"
           release_tag="$(sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9.]*\)$/\1/p' <<<"${commit_body}")"
           source_sha="$(sed -n 's/^HMG-Source-SHA: \([0-9a-f]\{40\}\)$/\1/p' <<<"${commit_body}")"
+          workflow_run="$(sed -n 's#^HMG-Workflow-Run: \(https://github\.com/HMG-AI/HMG/actions/runs/[1-9][0-9]*\)$#\1#p' <<<"${commit_body}")"
           expected_digest="$(sed -n 's/^HMG-Asset-Set-SHA256: \([0-9a-f]\{64\}\)$/\1/p' <<<"${commit_body}")"
-          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+          if [[ "${source_repository}" != "HMG-AI/HMG" || \
+                ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
                 ! "${source_sha}" =~ ^[0-9a-f]{40}$ || \
+                ! "${workflow_run}" =~ ^https://github\.com/HMG-AI/HMG/actions/runs/[1-9][0-9]*$ || \
                 ! "${expected_digest}" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::Promotion commit has incomplete or invalid provenance trailers"
             exit 2
