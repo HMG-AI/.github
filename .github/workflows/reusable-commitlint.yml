@@ -22,7 +22,11 @@ jobs:
     timeout-minutes: 10
     container:
       image: node:24.11.1-bookworm@sha256:9a2ed90cd91b1f3412affe080b62e69b057ba8661d9844e143a6bbd76a23260f
-      options: --cap-drop=ALL --security-opt=no-new-privileges
+      # GitHub's checkout action must write runner command files mounted from
+      # the host. Dropping DAC_OVERRIDE from the root container user prevents
+      # those writes, so retain Docker's default capability set and still
+      # prohibit privilege escalation.
+      options: --security-opt=no-new-privileges
     steps:
       - name: Validate commit SHA inputs
         shell: bash
