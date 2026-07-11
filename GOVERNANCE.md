@@ -31,4 +31,6 @@ The canonical promotion trailers are `HMG-Source-Repository`, `HMG-Source-Tag`, 
 
 ## Emergency changes
 
-Emergency bypass is exceptional, time-bounded, and audited. The incident lead must record the severity, reason ordinary review cannot be completed, exact change, approver, validation, rollback, and follow-up issue. The bypass is removed immediately after recovery; a retrospective pull request restores normal evidence and review.
+Default-branch bypass is not an emergency mechanism. The default-branch and required-quality rulesets keep an empty bypass-actor list for people, administrators, teams, apps, and automation. An incident may justify revoking credentials, freezing a deployment, disabling a compromised workflow, or repairing a misconfigured ruleset through organization administration, but it must not authorize a direct `main` push, skipped required check, self-approval, or admin merge.
+
+Emergency source changes still use a minimal pull request, a current non-author approval, and every applicable quality gate after any broken rule configuration is repaired. The incident lead records the severity, exact administrative and repository changes, two-person authorization, validation, rollback, and follow-up issue. Restored ruleset payloads and audit evidence are verified immediately after recovery.
