@@ -825,7 +825,7 @@ jobs:
             "- Candidate tree: \`${CANDIDATE_TREE}\`" \
             "- Draft asset set SHA-256: \`${ASSET_SET_SHA256}\`" \
             "- Provenance key: \`${KEY_ID}\`" \
-            'This pull request must pass organization and HMG-public gates and receive an eligible human CODEOWNER approval. Automation has no bypass or approval authority.'
+            'This pull request must pass organization and HMG-public gates and receive an eligible human CODEOWNER approval. Automation never submits a review, is not a bypass actor, and cannot satisfy the independent human approval requirement.'
           if [[ "${pr_state}" == "open" ]]; then
             if [[ "${push_required}" == "true" ]]; then
               gh pr edit "${pr_number}" \
