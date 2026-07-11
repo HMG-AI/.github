@@ -1,0 +1,9 @@
+name: Untrusted dynamic runner
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ github.event.pull_request.head.label }}
+    steps:
+      - run: "true"

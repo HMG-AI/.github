@@ -1,0 +1,11 @@
+name: Direct github-script interpolation
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          script: core.info('${{ github.event.pull_request.title }}')

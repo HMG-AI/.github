@@ -1,0 +1,9 @@
+name: Untrusted self-hosted runner
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: "true"

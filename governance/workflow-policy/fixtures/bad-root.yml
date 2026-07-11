@@ -1,0 +1,2 @@
+- name: A sequence is not a workflow mapping
+- on: push
