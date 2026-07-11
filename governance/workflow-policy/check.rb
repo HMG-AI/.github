@@ -10,6 +10,12 @@ module WorkflowPolicy
   MAX_WORKFLOW_FILES = 256
   WORKFLOW_PATH = %r{\A\.github/workflows/[^/]+\.ya?ml\z}i
   FULL_SHA = /\A[0-9a-f]{40}\z/
+  GITHUB_HOSTED_RUNNER = %r{\A(?:
+    ubuntu-(?:latest|\d{2}\.\d{2})(?:-arm)?
+    |ubuntu-slim
+    |windows-(?:latest|\d{4}|11-arm)
+    |macos-(?:latest|\d{2})(?:-(?:large|xlarge|intel))?
+  )\z}x
   PR_LIKE_EVENTS = %w[
     pull_request
     merge_group
@@ -386,16 +392,27 @@ module WorkflowPolicy
           "runner.pr_self_hosted",
           "job #{job_id} must not run an untrusted event on a self-hosted runner"
         )
+        return
       end
 
-      expression = first_untrusted_expression(value)
-      return unless expression
+      expression = first_expression(value)
+      if expression
+        add(
+          path,
+          locate(content, "${{#{expression}}}"),
+          "runner.pr_untrusted_expression",
+          "job #{job_id} must use a literal GitHub-hosted runner instead of a dynamic expression"
+        )
+        return
+      end
+
+      return if value.is_a?(String) && GITHUB_HOSTED_RUNNER.match?(value)
 
       add(
         path,
-        locate(content, "${{#{expression}}}"),
-        "runner.pr_untrusted_expression",
-        "job #{job_id} must not select its runner from an untrusted event or input context"
+        locate(content, "runs-on:"),
+        "runner.pr_unapproved",
+        "job #{job_id} must use an approved literal GitHub-hosted runner label"
       )
     end
 
@@ -420,6 +437,17 @@ module WorkflowPolicy
         value.filter_map { |item| first_untrusted_expression(item) }.first
       when Hash
         value.values.filter_map { |item| first_untrusted_expression(item) }.first
+      end
+    end
+
+    def first_expression(value)
+      case value
+      when String
+        value.scan(/\$\{\{(.*?)\}\}/m).map(&:first).first
+      when Array
+        value.filter_map { |item| first_expression(item) }.first
+      when Hash
+        value.values.filter_map { |item| first_expression(item) }.first
       end
     end
 
