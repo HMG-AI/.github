@@ -248,6 +248,11 @@ jobs:
             install.sh
             version.json
           )
+          if ((${#expected_packages[@]} != 6 || ${#expected_assets[@]} != 10)) || \
+             [[ "$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort -u | wc -l)" -ne 10 ]]; then
+            echo "::error::The governed release contract must contain six unique packages and ten unique assets"
+            exit 2
+          fi
           expected_asset_list="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
           actual_asset_list="$(find "${asset_dir}" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
           if [[ "${actual_asset_list}" != "${expected_asset_list}" ]]; then
@@ -543,6 +548,11 @@ jobs:
             install.sh \
             version.json \
             | LC_ALL=C sort > "${expected_assets}"
+          if [[ "$(wc -l < "${expected_assets}")" -ne 10 || \
+                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 10 ]]; then
+            echo "::error::The restored release contract must contain exactly ten unique assets"
+            exit 2
+          fi
           find "${asset_dir}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
             | LC_ALL=C sort > "${actual_assets}"
           diff -u "${expected_assets}" "${actual_assets}"
@@ -678,6 +688,11 @@ jobs:
             install.sh \
             version.json \
             | LC_ALL=C sort > "${expected_assets}"
+          if [[ "$(wc -l < "${expected_assets}")" -ne 10 || \
+                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 10 ]]; then
+            echo "::error::The staging release contract must contain exactly ten unique assets"
+            exit 2
+          fi
           while IFS= read -r existing_name; do
             if ! grep -Fxq "${existing_name}" "${expected_assets}"; then
               echo "::error::Unexpected asset already exists in the staging release: ${existing_name}"
