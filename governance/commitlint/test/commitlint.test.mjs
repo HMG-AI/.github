@@ -39,6 +39,25 @@ test('accepts a conventional English commit message', () => {
   assert.equal(result.status, 0, result.stdout || result.stderr);
 });
 
+test('accepts bounded cryptographic provenance trailers', () => {
+  const message = [
+    'chore(public): promote HMG v1.7.7',
+    '',
+    `HMG-Provenance-Key-ID: ed25519-spki-sha256-${'a'.repeat(64)}`,
+    `HMG-Provenance-Signature-Ed25519: ${'A'.repeat(86)}==`,
+    '',
+  ].join('\n');
+  const result = lint(message);
+  assert.equal(result.status, 0, result.stdout || result.stderr);
+});
+
+test('still rejects footer lines longer than the provenance bound', () => {
+  assertLintFailure(
+    `chore: reject an oversized footer\n\nAudit-Value: ${'a'.repeat(130)}\n`,
+    'footer-max-line-length',
+  );
+});
+
 test('rejects Unicode Han script in subject, body, and footer', () => {
   assertLintFailure('fix: 修复 tenant lookup\n', 'subject-no-han');
   assertLintFailure(
