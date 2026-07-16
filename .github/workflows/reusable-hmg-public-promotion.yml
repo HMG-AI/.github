@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       source_run_id:
-        description: Successful Build & Release workflow run ID that produced the governed assets
+        description: Successful Build public release artifacts workflow run ID that produced the governed assets
         required: true
         type: string
     secrets:
@@ -47,11 +47,6 @@ jobs:
           CALLER_REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          UPSTREAM_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
-          UPSTREAM_EVENT: ${{ github.event.workflow_run.event || '' }}
-          UPSTREAM_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
-          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id || '' }}
-          UPSTREAM_WORKFLOW: ${{ github.event.workflow_run.name || '' }}
         run: |
           set -Eeuo pipefail
           if [[ "${CALLER_REPOSITORY}" != "HMG-AI/HMG" ]]; then
@@ -67,70 +62,21 @@ jobs:
             exit 2
           fi
           if [[ ! "${SOURCE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::source_run_id must identify a Build & Release run"
+            echo "::error::source_run_id must identify a public artifact build run"
             exit 2
           fi
-          case "${CALLER_EVENT}" in
-            workflow_run)
-              if [[ "${UPSTREAM_WORKFLOW}" != "Build & Release" || \
-                    "${UPSTREAM_EVENT}" != "push" || \
-                    "${UPSTREAM_CONCLUSION}" != "success" || \
-                    "${UPSTREAM_HEAD_BRANCH}" != "${RELEASE_TAG}" || \
-                    "${UPSTREAM_RUN_ID}" != "${SOURCE_RUN_ID}" ]]; then
-                echo "::error::Promotion requires the exact successful Build & Release tag-push run"
-                exit 2
-              fi
-              ;;
-            workflow_dispatch)
-              ;;
-            *)
-              echo "::error::Promotion only accepts workflow_run or trusted workflow_dispatch callers"
-              exit 2
-              ;;
-          esac
+          if [[ "${CALLER_EVENT}" != "workflow_dispatch" ]]; then
+            echo "::error::Promotion only accepts a trusted workflow_dispatch caller"
+            exit 2
+          fi
 
-      - name: Check out the reviewed HMG release
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ inputs.release_tag }}
-          fetch-depth: 0
-          path: source
-          persist-credentials: false
-
-      - name: Prove the tag belongs to protected main
-        id: source
-        shell: bash
-        env:
-          CALLER_EVENT: ${{ github.event_name }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          UPSTREAM_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
-        run: |
-          set -Eeuo pipefail
-          source_sha="$(git -C source rev-parse HEAD)"
-          tag_sha="$(git -C source rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
-          if [[ "${source_sha}" != "${tag_sha}" ]]; then
-            echo "::error::Checkout SHA does not match ${RELEASE_TAG}"
-            exit 2
-          fi
-          if [[ "${CALLER_EVENT}" == "workflow_run" && "${source_sha}" != "${UPSTREAM_HEAD_SHA}" ]]; then
-            echo "::error::The release tag moved after the successful upstream workflow"
-            exit 2
-          fi
-          git -C source fetch --no-tags origin main:refs/remotes/origin/main
-          if ! git -C source merge-base --is-ancestor "${source_sha}" refs/remotes/origin/main; then
-            echo "::error::${RELEASE_TAG} is not reachable from HMG-AI/HMG main"
-            exit 2
-          fi
-          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
-
-      - name: Verify the exact upstream Build and Release run
+      - name: Verify the exact upstream public artifact build run
         id: source-run
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -Eeuo pipefail
           run_json="${RUNNER_TEMP}/hmg-source-run.json"
@@ -140,21 +86,75 @@ jobs:
             "repos/HMG-AI/HMG/actions/runs/${SOURCE_RUN_ID}" \
             > "${run_json}"
           jq -e \
-            --arg tag "${RELEASE_TAG}" \
-            --arg sha "${SOURCE_SHA}" \
             --argjson run_id "${SOURCE_RUN_ID}" '
               .id == $run_id and
-              .name == "Build & Release" and
-              .path == ".github/workflows/build-release.yml" and
-              .event == "push" and
+              .name == "Build public release artifacts (no publish)" and
+              .path == ".github/workflows/build-public-release-artifacts.yml" and
+              .event == "workflow_dispatch" and
               .status == "completed" and
               .conclusion == "success" and
-              .head_branch == $tag and
-              .head_sha == $sha and
+              .head_branch == "main" and
+              (.head_sha | test("^[0-9a-f]{40}$")) and
               .html_url == ("https://github.com/HMG-AI/HMG/actions/runs/" + ($run_id | tostring))
             ' "${run_json}" >/dev/null
-          echo "url=https://github.com/HMG-AI/HMG/actions/runs/${SOURCE_RUN_ID}" \
-            >> "${GITHUB_OUTPUT}"
+          source_sha="$(jq -r '.head_sha' "${run_json}")"
+          version="${RELEASE_TAG#v}"
+          artifact_name="hmg-public-${version}-${source_sha}"
+          artifacts_json="${RUNNER_TEMP}/hmg-source-artifacts.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/HMG-AI/HMG/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" \
+            > "${artifacts_json}"
+          jq -e \
+            --arg name "${artifact_name}" \
+            --argjson run_id "${SOURCE_RUN_ID}" '
+              [.artifacts[] | select(
+                .name == $name and
+                .expired == false and
+                .workflow_run.id == $run_id and
+                .size_in_bytes > 0
+              )] | length == 1
+            ' "${artifacts_json}" >/dev/null
+          {
+            echo "artifact_name=${artifact_name}"
+            echo "sha=${source_sha}"
+            echo "url=https://github.com/HMG-AI/HMG/actions/runs/${SOURCE_RUN_ID}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check out the exact reviewed HMG source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.source-run.outputs.sha }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Prove the source and version belong to protected main
+        id: source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SOURCE_SHA: ${{ steps.source-run.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          source_sha="$(git -C source rev-parse HEAD)"
+          if [[ "${source_sha}" != "${EXPECTED_SOURCE_SHA}" ]]; then
+            echo "::error::Checkout SHA does not match the successful artifact build"
+            exit 2
+          fi
+          git -C source fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git -C source merge-base --is-ancestor "${source_sha}" refs/remotes/origin/main; then
+            echo "::error::${source_sha} is not reachable from HMG-AI/HMG main"
+            exit 2
+          fi
+          version="${RELEASE_TAG#v}"
+          source_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' source/Cargo.toml | head -1)"
+          if [[ "${source_version}" != "${version}" ]]; then
+            echo "::error::${RELEASE_TAG} does not match the checked-in HMG version"
+            exit 2
+          fi
+          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Check out the protected target base
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -218,69 +218,65 @@ jobs:
             fi
           done
 
-      - name: Download and validate private release assets without target credentials
+      - name: Download and validate the exact public artifact set without target credentials
         id: assets
         shell: bash
         env:
+          ARTIFACT_NAME: ${{ steps.source-run.outputs.artifact_name }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -Eeuo pipefail
-          readonly asset_dir="${RUNNER_TEMP}/hmg-source-release-assets"
-          mkdir -p "${asset_dir}"
-          gh release download "${RELEASE_TAG}" \
+          readonly artifact_dir="${RUNNER_TEMP}/hmg-source-public-artifact"
+          mkdir -p "${artifact_dir}"
+          gh run download "${SOURCE_RUN_ID}" \
             --repo HMG-AI/HMG \
-            --dir "${asset_dir}"
+            --name "${ARTIFACT_NAME}" \
+            --dir "${artifact_dir}"
 
+          readonly asset_dir="${artifact_dir}/public-release"
+          readonly evidence="${artifact_dir}/public-release-set.json"
+          readonly upstream_verification="${artifact_dir}/public-release-verification.json"
           readonly version="${RELEASE_TAG#v}"
-          readonly expected_packages=(
-            "hmg-${version}-aarch64-apple-darwin.tar.gz"
-            "hmg-${version}-aarch64-pc-windows-msvc.zip"
-            "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz"
-            "hmg-${version}-x86_64-apple-darwin.tar.gz"
-            "hmg-${version}-x86_64-pc-windows-msvc.zip"
-            "hmg-${version}-x86_64-unknown-linux-gnu.tar.gz"
-          )
-          readonly expected_assets=(
-            "${expected_packages[@]}"
-            SHA256SUMS.txt
-            install.ps1
-            install.sh
-            version.json
-          )
-          if ((${#expected_packages[@]} != 6 || ${#expected_assets[@]} != 10)) || \
-             [[ "$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort -u | wc -l)" -ne 10 ]]; then
-            echo "::error::The governed release contract must contain six unique packages and ten unique assets"
+          for required_path in "${asset_dir}" "${evidence}" "${upstream_verification}"; do
+            if [[ ! -e "${required_path}" || -L "${required_path}" ]]; then
+              echo "::error::The public artifact is missing a required safe path: ${required_path}"
+              exit 2
+            fi
+          done
+          artifact_entries="$(find "${artifact_dir}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "${artifact_entries}" != $'public-release\npublic-release-set.json\npublic-release-verification.json' ]]; then
+            echo "::error::The downloaded build artifact has an unexpected top-level shape"
+            printf '%s\n' "${artifact_entries}"
             exit 2
           fi
-          expected_asset_list="$(printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort)"
-          actual_asset_list="$(find "${asset_dir}" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
-          if [[ "${actual_asset_list}" != "${expected_asset_list}" ]]; then
-            echo "::error::Private release must contain exactly the ten governed assets"
-            printf 'Expected:\n%s\nActual:\n%s\n' "${expected_asset_list}" "${actual_asset_list}"
+          if [[ "$(jq -r '.ok' "${upstream_verification}")" != "true" || \
+                "$(jq -r '.asset_count' "${upstream_verification}")" != "17" || \
+                "$(jq -r '.source_sha' "${upstream_verification}")" != "${SOURCE_SHA}" || \
+                "$(jq -r '.tag' "${upstream_verification}")" != "${RELEASE_TAG}" ]]; then
+            echo "::error::The upstream verification record does not match this promotion"
             exit 2
           fi
-          if [[ "$(jq -r '.tag' "${asset_dir}/version.json")" != "${RELEASE_TAG}" || \
+          python3 source/scripts/verify-hmg-public-release-set.py \
+            --repo-root source \
+            --release-root "${asset_dir}" \
+            --evidence "${evidence}" \
+            --version "${version}" \
+            --source-sha "${SOURCE_SHA}" \
+            > "${RUNNER_TEMP}/hmg-public-independent-verification.json"
+          if [[ "$(jq -r '.ok' "${RUNNER_TEMP}/hmg-public-independent-verification.json")" != "true" || \
+                "$(jq -r '.asset_count' "${RUNNER_TEMP}/hmg-public-independent-verification.json")" != "17" ]]; then
+            echo "::error::Independent verification did not prove the exact 17-asset contract"
+            exit 2
+          fi
+          if [[ "$(jq -r '.source_sha' "${asset_dir}/version.json")" != "${SOURCE_SHA}" || \
+                "$(jq -r '.tag' "${asset_dir}/version.json")" != "${RELEASE_TAG}" || \
                 "$(jq -r '.version' "${asset_dir}/version.json")" != "${version}" ]]; then
-            echo "::error::version.json does not match ${RELEASE_TAG}"
+            echo "::error::version.json is not bound to the requested source, tag, and version"
             exit 2
           fi
-          if ! awk 'NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ {next} {exit 1}' \
-              "${asset_dir}/SHA256SUMS.txt"; then
-            echo "::error::SHA256SUMS.txt must contain strict lowercase SHA-256 records"
-            exit 2
-          fi
-          expected_package_list="$(printf '%s\n' "${expected_packages[@]}" | LC_ALL=C sort)"
-          checksum_package_list="$(awk '{print $2}' "${asset_dir}/SHA256SUMS.txt" | sed 's/^\*//' | LC_ALL=C sort)"
-          if [[ "${checksum_package_list}" != "${expected_package_list}" ]]; then
-            echo "::error::SHA256SUMS.txt must cover exactly the six governed packages"
-            exit 2
-          fi
-          if ! (cd "${asset_dir}" && sha256sum --check --strict SHA256SUMS.txt); then
-            echo "::error::Private release package checksum verification failed"
-            exit 2
-          fi
-
           asset_manifest="$({
             for asset in "${asset_dir}"/*; do
               printf '%s  %s\n' \
@@ -288,6 +284,10 @@ jobs:
                 "$(basename "${asset}")"
             done
           } | LC_ALL=C sort -k2)"
+          if [[ "$(printf '%s\n' "${asset_manifest}" | wc -l)" -ne 17 ]]; then
+            echo "::error::The governed public release must contain exactly 17 assets"
+            exit 2
+          fi
           printf '%s\n' "${asset_manifest}" > "${RUNNER_TEMP}/hmg-source-assets.sha256"
           asset_set_sha256="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
           echo "asset_dir=${asset_dir}" >> "${GITHUB_OUTPUT}"
@@ -537,7 +537,14 @@ jobs:
           asset_manifest="${RUNNER_TEMP}/restored-assets.sha256"
           version="${RELEASE_TAG#v}"
           printf '%s\n' \
+            HMG-Desktop-SHA256SUMS.txt \
             SHA256SUMS.txt \
+            "HMG-Desktop-${version}-aarch64-setup.exe" \
+            "HMG-Desktop-${version}-aarch64.dmg" \
+            "HMG-Desktop-${version}-x86_64-setup.exe" \
+            "HMG-Desktop-${version}-x86_64.AppImage" \
+            "HMG-Desktop-${version}-x86_64.deb" \
+            "HMG-Desktop-${version}-x86_64.dmg" \
             "hmg-${version}-aarch64-apple-darwin.tar.gz" \
             "hmg-${version}-aarch64-pc-windows-msvc.zip" \
             "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz" \
@@ -548,9 +555,9 @@ jobs:
             install.sh \
             version.json \
             | LC_ALL=C sort > "${expected_assets}"
-          if [[ "$(wc -l < "${expected_assets}")" -ne 10 || \
-                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 10 ]]; then
-            echo "::error::The restored release contract must contain exactly ten unique assets"
+          if [[ "$(wc -l < "${expected_assets}")" -ne 17 || \
+                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 17 ]]; then
+            echo "::error::The restored release contract must contain exactly 17 unique assets"
             exit 2
           fi
           find "${asset_dir}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
@@ -677,7 +684,14 @@ jobs:
           version="${RELEASE_TAG#v}"
           expected_assets="${RUNNER_TEMP}/staging-expected-assets.txt"
           printf '%s\n' \
+            HMG-Desktop-SHA256SUMS.txt \
             SHA256SUMS.txt \
+            "HMG-Desktop-${version}-aarch64-setup.exe" \
+            "HMG-Desktop-${version}-aarch64.dmg" \
+            "HMG-Desktop-${version}-x86_64-setup.exe" \
+            "HMG-Desktop-${version}-x86_64.AppImage" \
+            "HMG-Desktop-${version}-x86_64.deb" \
+            "HMG-Desktop-${version}-x86_64.dmg" \
             "hmg-${version}-aarch64-apple-darwin.tar.gz" \
             "hmg-${version}-aarch64-pc-windows-msvc.zip" \
             "hmg-${version}-aarch64-unknown-linux-gnu.tar.gz" \
@@ -688,9 +702,9 @@ jobs:
             install.sh \
             version.json \
             | LC_ALL=C sort > "${expected_assets}"
-          if [[ "$(wc -l < "${expected_assets}")" -ne 10 || \
-                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 10 ]]; then
-            echo "::error::The staging release contract must contain exactly ten unique assets"
+          if [[ "$(wc -l < "${expected_assets}")" -ne 17 || \
+                "$(LC_ALL=C sort -u "${expected_assets}" | wc -l)" -ne 17 ]]; then
+            echo "::error::The staging release contract must contain exactly 17 unique assets"
             exit 2
           fi
           while IFS= read -r existing_name; do
@@ -821,7 +835,7 @@ jobs:
             "- Source repository: \`HMG-AI/HMG\`" \
             "- Source tag: \`${RELEASE_TAG}\`" \
             "- Source SHA: \`${SOURCE_SHA}\`" \
-            "- Source Build & Release run: ${SOURCE_RUN_URL}" \
+            "- Source public artifact build run: ${SOURCE_RUN_URL}" \
             "- Candidate tree: \`${CANDIDATE_TREE}\`" \
             "- Draft asset set SHA-256: \`${ASSET_SET_SHA256}\`" \
             "- Provenance key: \`${KEY_ID}\`" \
