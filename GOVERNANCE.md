@@ -3,7 +3,7 @@
 ## Decision rights
 
 - **Organization owners** manage billing, identity, organization policy, and emergency recovery. Owner membership is intentionally minimal.
-- **Security managers** manage alerts, advisories, secret scanning, and incident coordination without receiving unrelated repository administration.
+- **Core maintainers** manage shared governance, security response, workflow trust boundaries, and organization-wide repository policy.
 - **Repository maintainers** own roadmap, triage, review quality, releases, and repository settings for their assigned products.
 - **Contributors** implement approved work through issues, branches, and pull requests with the least repository access needed.
 
@@ -11,7 +11,7 @@ Repository access is granted to teams, not directly to individuals, except for t
 
 ## Changes to governance
 
-Organization rulesets, teams, Actions policy, security defaults, reusable workflows, project fields, and this repository are controlled changes. Proposed changes must describe impact, migration, validation, rollback, and affected repositories. Governance changes require review from the governance CODEOWNERS and security review when permissions or trust boundaries change.
+Organization rulesets, teams, Actions policy, security defaults, reusable workflows, project fields, and this repository are controlled changes. Proposed changes must describe impact, migration, validation, rollback, and affected repositories. Governance changes require review from the governance CODEOWNERS; Core Maintainers own security review when permissions or trust boundaries change.
 
 ## Merge and release authority
 
