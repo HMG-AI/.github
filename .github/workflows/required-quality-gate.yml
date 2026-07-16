@@ -13,11 +13,63 @@ concurrency:
 
 jobs:
   quality-gate:
-    name: quality-gate
-    uses: HMG-AI/.github/.github/workflows/reusable-commitlint.yml@978d6d08d6bfc1e8a3662c1f9b0daab8bfa0e557
-    with:
-      base_sha: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-      head_sha: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+    name: quality-gate / commitlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: node:24.11.1-bookworm@sha256:9a2ed90cd91b1f3412affe080b62e69b057ba8661d9844e143a6bbd76a23260f
+      options: --security-opt=no-new-privileges
+    steps:
+      - name: Validate commit SHA inputs
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          readonly sha_pattern='^[0-9a-f]{40}$'
+
+          for sha_name in BASE_SHA HEAD_SHA; do
+            sha_value="${!sha_name}"
+            if [[ ! "${sha_value}" =~ ${sha_pattern} ]]; then
+              echo "::error::${sha_name} must be a full 40-character lowercase hexadecimal commit SHA"
+              exit 2
+            fi
+          done
+
+      - name: Check out caller repository history
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          path: caller
+          persist-credentials: false
+
+      - name: Check out immutable organization commit policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: HMG-AI/.github
+          ref: ${{ github.workflow_sha }}
+          path: governance-source
+          sparse-checkout: governance/commitlint
+          persist-credentials: false
+
+      - name: Install locked commitlint dependencies
+        shell: bash
+        working-directory: governance-source/governance/commitlint
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Lint every commit in base..head
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          bash "${GITHUB_WORKSPACE}/governance-source/governance/commitlint/lint-range.sh" \
+            "${GITHUB_WORKSPACE}/caller" \
+            "${BASE_SHA}" \
+            "${HEAD_SHA}"
 
   workflow-security-policy:
     name: workflow-security-policy
