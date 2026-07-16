@@ -134,6 +134,7 @@ jobs:
         id: source
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           EXPECTED_SOURCE_SHA: ${{ steps.source-run.outputs.sha }}
         run: |
@@ -143,8 +144,16 @@ jobs:
             echo "::error::Checkout SHA does not match the successful artifact build"
             exit 2
           fi
-          git -C source fetch --no-tags origin main:refs/remotes/origin/main
-          if ! git -C source merge-base --is-ancestor "${source_sha}" refs/remotes/origin/main; then
+          ancestry_json="${RUNNER_TEMP}/hmg-source-main-ancestry.json"
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/HMG-AI/HMG/compare/${source_sha}...main" \
+            > "${ancestry_json}"
+          if ! jq -e --arg source_sha "${source_sha}" '
+            (.status == "ahead" or .status == "identical") and
+            .merge_base_commit.sha == $source_sha
+          ' "${ancestry_json}" >/dev/null; then
             echo "::error::${source_sha} is not reachable from HMG-AI/HMG main"
             exit 2
           fi
