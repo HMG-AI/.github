@@ -172,20 +172,6 @@ jobs:
           set -Eeuo pipefail
           echo "sha=$(git -C candidate rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
-      - name: Install the HMG public Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - name: Build the exact public candidate without credentials
-        shell: bash
-        env:
-          HMG_PUBLIC_BASE_BRANCH: main
-          HMG_RELEASE_TAG: ${{ inputs.release_tag }}
-          HMG_SOURCE_SHA: ${{ steps.source.outputs.sha }}
-        run: |
-          set -Eeuo pipefail
-          bash source/scripts/sync-export.sh \
-            --target-dir="${GITHUB_WORKSPACE}/candidate"
-
       - name: Enforce target-owned governance boundary
         shell: bash
         run: |
@@ -292,6 +278,55 @@ jobs:
           asset_set_sha256="$(printf '%s\n' "${asset_manifest}" | sha256sum | cut -d ' ' -f1)"
           echo "asset_dir=${asset_dir}" >> "${GITHUB_OUTPUT}"
           echo "asset_set_sha256=${asset_set_sha256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Add only minimal binary release provenance to the candidate
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ steps.source-run.outputs.artifact_name }}
+          ASSET_SET_SHA256: ${{ steps.assets.outputs.asset_set_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_RUN_URL: ${{ steps.source-run.outputs.url }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          readonly metadata_directory='candidate/release-provenance'
+          readonly metadata_relative_path="release-provenance/${RELEASE_TAG}.json"
+          readonly metadata_path="candidate/${metadata_relative_path}"
+          if [[ -L "${metadata_directory}" || -e "${metadata_path}" || -L "${metadata_path}" ]]; then
+            echo "::error::Release provenance path already exists or is unsafe: ${metadata_relative_path}"
+            exit 2
+          fi
+          mkdir -p "${metadata_directory}"
+          jq -n \
+            --arg artifact "${ARTIFACT_NAME}" \
+            --arg asset_set_sha256 "${ASSET_SET_SHA256}" \
+            --arg release_tag "${RELEASE_TAG}" \
+            --arg source_repository 'HMG-AI/HMG' \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_workflow_run "${SOURCE_RUN_URL}" \
+            --arg version "${RELEASE_TAG#v}" \
+            --argjson asset_count 17 \
+            '{
+              schema_version: "hmg-public-binary-release-provenance/v1",
+              release_tag: $release_tag,
+              version: $version,
+              source_repository: $source_repository,
+              source_sha: $source_sha,
+              source_workflow_run: $source_workflow_run,
+              source_artifact: $artifact,
+              asset_count: $asset_count,
+              asset_set_sha256: $asset_set_sha256
+            }' > "${metadata_path}"
+          candidate_status="$(
+            git -C candidate status \
+              --porcelain=v1 \
+              --untracked-files=all
+          )"
+          if [[ "${candidate_status}" != "?? ${metadata_relative_path}" ]]; then
+            echo "::error::Binary promotion may add only ${metadata_relative_path}"
+            printf '%s\n' "${candidate_status}"
+            exit 2
+          fi
 
       - name: Seal the candidate and assets for isolated jobs
         id: bundle
@@ -830,12 +865,13 @@ jobs:
           fi
 
           pr_title="chore(public): promote HMG ${RELEASE_TAG}"
-          printf -v pr_body '%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
-            'Automated protected promotion from the reviewed HMG release.' \
+          printf -v pr_body '%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
+            'Automated protected binary-only promotion from a verified HMG Actions artifact.' \
             "- Source repository: \`HMG-AI/HMG\`" \
             "- Source tag: \`${RELEASE_TAG}\`" \
             "- Source SHA: \`${SOURCE_SHA}\`" \
             "- Source public artifact build run: ${SOURCE_RUN_URL}" \
+            '- Repository scope: audit metadata only; no source, website, or npm synchronization' \
             "- Candidate tree: \`${CANDIDATE_TREE}\`" \
             "- Draft asset set SHA-256: \`${ASSET_SET_SHA256}\`" \
             "- Provenance key: \`${KEY_ID}\`" \
