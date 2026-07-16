@@ -39,7 +39,7 @@ test('accepts a conventional English commit message', () => {
   assert.equal(result.status, 0, result.stdout || result.stderr);
 });
 
-test('accepts bounded cryptographic provenance trailers', () => {
+test('accepts canonical cryptographic provenance trailers', () => {
   const message = [
     'chore(public): promote HMG v1.7.7',
     '',
@@ -51,10 +51,17 @@ test('accepts bounded cryptographic provenance trailers', () => {
   assert.equal(result.status, 0, result.stdout || result.stderr);
 });
 
-test('still rejects footer lines longer than the provenance bound', () => {
+test('rejects an ordinary footer line longer than 100 characters', () => {
   assertLintFailure(
     `chore: reject an oversized footer\n\nAudit-Value: ${'a'.repeat(130)}\n`,
-    'footer-max-line-length',
+    'footer-bounded-lines',
+  );
+});
+
+test('rejects a long provenance-shaped trailer with a malformed value', () => {
+  assertLintFailure(
+    `chore(public): reject malformed provenance\n\nHMG-Provenance-Signature-Ed25519: ${'A'.repeat(85)}===\n`,
+    'footer-bounded-lines',
   );
 });
 
