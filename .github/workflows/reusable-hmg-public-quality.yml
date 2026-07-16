@@ -157,11 +157,20 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ inputs.head_sha }}
           HEAD_REF: ${{ inputs.head_ref }}
+          PROMOTION_COMMIT: ${{ steps.promotion.outputs.commit_sha }}
         run: |
           set -Eeuo pipefail
+          release_tag="$(
+            git -C candidate show -s --format=%B "${PROMOTION_COMMIT}" \
+              | git interpret-trailers --parse \
+              | sed -n 's/^HMG-Source-Tag: \(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p'
+          )"
+          if [[ ! "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Promotion must declare one canonical stable source tag"
+            exit 2
+          fi
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            release_tag="${HEAD_REF#release/hmg-public/}"
-            if [[ ! "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            if [[ "${HEAD_REF}" != "release/hmg-public/${release_tag}" ]]; then
               echo "::error::Promotion branch must end in a canonical stable SemVer tag"
               exit 2
             fi
@@ -171,10 +180,13 @@ jobs:
               exit 2
             fi
           fi
-          changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
-            .github commitlint.config.mjs)"
-          if [[ -n "${changed}" ]]; then
-            echo "::error::Automated promotion cannot change target-owned governance files"
+          readonly expected_path="release-provenance/${release_tag}.json"
+          changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
+          if [[ "${changed}" != "${expected_path}" || \
+                "$(git -C candidate diff --diff-filter=A --name-only "${BASE_SHA}" "${HEAD_SHA}")" != "${expected_path}" || \
+                ! -f "candidate/${expected_path}" || \
+                -L "candidate/${expected_path}" ]]; then
+            echo "::error::Automated binary promotion may add only ${expected_path}"
             printf '%s\n' "${changed}"
             exit 2
           fi
@@ -291,27 +303,35 @@ jobs:
             echo "::error::Promotion provenance signature is not trusted"
             exit 2
           fi
-          if [[ ! -f candidate/VERSION || "$(tr -d '[:space:]' < candidate/VERSION)" != "${release_tag#v}" ]]; then
-            echo "::error::Candidate VERSION does not match ${release_tag}"
-            exit 2
-          fi
-          base_version="$(tr -d '[:space:]' < <(git -C candidate show "${BASE_SHA}:VERSION"))"
-          head_version="$(tr -d '[:space:]' < candidate/VERSION)"
-          if [[ ! "${base_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ || \
-                ! "${head_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::Promotion base and candidate VERSION must use canonical stable SemVer"
-            exit 2
-          fi
-          highest_version="$(printf '%s\n%s\n' "${base_version}" "${head_version}" | LC_ALL=C sort -V | tail -n 1)"
-          if [[ "${highest_version}" != "${head_version}" || \
-                "${head_version}" == "${base_version}" ]]; then
-            echo "::error::Promotion VERSION ${head_version} must be newer than base ${base_version}"
-            exit 2
-          fi
-          if [[ "$(jq -r '.product.version' candidate/public-manifest.json)" != "${release_tag#v}" ]]; then
-            echo "::error::public-manifest.json version does not match ${release_tag}"
-            exit 2
-          fi
+          metadata_file="candidate/release-provenance/${release_tag}.json"
+          jq -e \
+            --arg artifact "hmg-public-${release_tag#v}-${source_sha}" \
+            --arg asset_set_sha256 "${expected_digest}" \
+            --arg release_tag "${release_tag}" \
+            --arg source_sha "${source_sha}" \
+            --arg source_workflow_run "${workflow_run}" \
+            --arg version "${release_tag#v}" '
+              keys == [
+                "asset_count",
+                "asset_set_sha256",
+                "release_tag",
+                "schema_version",
+                "source_artifact",
+                "source_repository",
+                "source_sha",
+                "source_workflow_run",
+                "version"
+              ] and
+              .schema_version == "hmg-public-binary-release-provenance/v1" and
+              .release_tag == $release_tag and
+              .version == $version and
+              .source_repository == "HMG-AI/HMG" and
+              .source_sha == $source_sha and
+              .source_workflow_run == $source_workflow_run and
+              .source_artifact == $artifact and
+              .asset_count == 17 and
+              .asset_set_sha256 == $asset_set_sha256
+            ' "${metadata_file}" >/dev/null
 
           set +e
           final_tag_response="$(gh api \
