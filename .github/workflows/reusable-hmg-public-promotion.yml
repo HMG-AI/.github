@@ -203,8 +203,6 @@ jobs:
             .github/scripts/publish-promoted-release.sh \
             .github/scripts/test-classify-promoted-release.sh \
             .github/scripts/test-publisher-policy.sh \
-            .github/workflows/commitlint.yml \
-            .github/workflows/commitlint-approval.yml \
             .github/workflows/publish-promoted-release.yml \
             commitlint.config.mjs; do
             if [[ ! -f "candidate/${required_file}" || -L "candidate/${required_file}" ]]; then
