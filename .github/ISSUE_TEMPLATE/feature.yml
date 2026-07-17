@@ -40,15 +40,6 @@ body:
     attributes:
       label: Scope and compatibility
       description: Affected repositories, APIs, data, platforms, editions, migrations, or integrations.
-  - type: textarea
-    id: acceptance
-    attributes:
-      label: Acceptance criteria
-      placeholder: |
-        - [ ] ...
-        - [ ] ...
-    validations:
-      required: true
   - type: dropdown
     id: value
     attributes:
