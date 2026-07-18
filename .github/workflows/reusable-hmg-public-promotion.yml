@@ -706,22 +706,48 @@ jobs:
           pr_json="$(gh api \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "/repos/${TARGET_REPOSITORY}/pulls?state=all&head=HMG-AI:${head_branch}&base=main&per_page=20")"
+            "/repos/${TARGET_REPOSITORY}/pulls?state=open&head=HMG-AI:${head_branch}&base=main&per_page=20")"
           pr_count="$(jq 'length' <<<"${pr_json}")"
           if ((pr_count > 1)); then
-            echo "::error::More than one pull request exists for ${head_branch}"
+            echo "::error::More than one open pull request exists for ${head_branch}"
             exit 2
           fi
           pr_state="$(jq -r '.[0].state // empty' <<<"${pr_json}")"
-          pr_merged="$(jq -r '.[0].merged_at // empty' <<<"${pr_json}")"
           pr_number="$(jq -r '.[0].number // empty' <<<"${pr_json}")"
-          if [[ "${pr_state}" == "closed" ]]; then
-            if [[ -n "${pr_merged}" ]]; then
-              echo "::error::This promotion is already merged; recover the exact publisher run instead"
-            else
-              echo "::error::Promotion PR ${pr_number} was closed without merging; manual triage is required"
-            fi
+
+          closed_pr_json="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${TARGET_REPOSITORY}/pulls?state=closed&head=HMG-AI:${head_branch}&base=main&per_page=20")"
+          merged_pr_count="$(jq '[.[] | select(.merged_at != null)] | length' <<<"${closed_pr_json}")"
+          abandoned_prs="$(jq -r '[.[] | select(.merged_at == null) | .number] | join(",")' <<<"${closed_pr_json}")"
+          if [[ -n "${abandoned_prs}" ]]; then
+            echo "::error::Promotion PR(s) ${abandoned_prs} were closed without merging; manual triage is required"
             exit 2
+          fi
+          if ((merged_pr_count > 0)); then
+            legacy_provenance="$(git show "HEAD:release-provenance/${RELEASE_TAG}.json" 2>/dev/null || true)"
+            if ! jq -e \
+              --arg asset_set_sha256 "${ASSET_SET_SHA256}" \
+              --arg release_tag "${RELEASE_TAG}" \
+              --arg source_run_url "${SOURCE_RUN_URL}" \
+              --arg source_sha "${SOURCE_SHA}" '
+                .schema_version == "hmg-public-binary-release-provenance/v1" and
+                .release_tag == $release_tag and
+                .source_repository == "HMG-AI/HMG" and
+                .source_sha == $source_sha and
+                .source_workflow_run == $source_run_url and
+                .asset_count == 17 and
+                .asset_set_sha256 == $asset_set_sha256
+              ' <<<"${legacy_provenance}" >/dev/null; then
+              echo "::error::This promotion is already merged; recover the exact publisher run instead"
+              exit 2
+            fi
+            if ((merged_pr_count != 1)); then
+              echo "::error::Legacy recovery requires exactly one prior merged promotion pull request"
+              exit 2
+            fi
+            echo "::notice::Recovering one exact legacy v1 promotion receipt through a new reviewed v2 promotion"
           fi
 
           set +e
