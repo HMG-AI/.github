@@ -181,13 +181,25 @@ jobs:
             fi
           fi
           readonly expected_path="release-provenance/${release_tag}.json"
-          changed="$(git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}")"
-          if [[ "${changed}" != "${expected_path}" || \
-                "$(git -C candidate diff --diff-filter=A --name-only "${BASE_SHA}" "${HEAD_SHA}")" != "${expected_path}" || \
+          protected_changes="$(
+            git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+              .github \
+              commitlint.config.mjs
+          )"
+          provenance_changes="$(
+            git -C candidate diff --name-only "${BASE_SHA}" "${HEAD_SHA}" -- \
+              release-provenance
+          )"
+          if [[ -n "${protected_changes}" ]]; then
+            echo "::error::Automated promotion must preserve target-owned governance"
+            printf '%s\n' "${protected_changes}"
+            exit 2
+          fi
+          if [[ "${provenance_changes}" != "${expected_path}" || \
                 ! -f "candidate/${expected_path}" || \
                 -L "candidate/${expected_path}" ]]; then
-            echo "::error::Automated binary promotion may add only ${expected_path}"
-            printf '%s\n' "${changed}"
+            echo "::error::Automated promotion must preserve provenance history and add or replace only ${expected_path}"
+            printf '%s\n' "${provenance_changes}"
             exit 2
           fi
 
@@ -310,6 +322,7 @@ jobs:
             --arg release_tag "${release_tag}" \
             --arg source_sha "${source_sha}" \
             --arg source_workflow_run "${workflow_run}" \
+            --arg target_base_sha "${BASE_SHA}" \
             --arg version "${release_tag#v}" '
               keys == [
                 "asset_count",
@@ -320,9 +333,10 @@ jobs:
                 "source_repository",
                 "source_sha",
                 "source_workflow_run",
+                "target_base_sha",
                 "version"
               ] and
-              .schema_version == "hmg-public-binary-release-provenance/v1" and
+              .schema_version == "hmg-public-binary-release-provenance/v2" and
               .release_tag == $release_tag and
               .version == $version and
               .source_repository == "HMG-AI/HMG" and
@@ -330,7 +344,8 @@ jobs:
               .source_workflow_run == $source_workflow_run and
               .source_artifact == $artifact and
               .asset_count == 17 and
-              .asset_set_sha256 == $asset_set_sha256
+              .asset_set_sha256 == $asset_set_sha256 and
+              .target_base_sha == $target_base_sha
             ' "${metadata_file}" >/dev/null
 
           set +e
