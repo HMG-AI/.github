@@ -518,6 +518,13 @@ jobs:
             echo "::error::No target-owned release policy scripts were found"
             exit 2
           fi
-          shellcheck "${policy_scripts[@]}"
+          for policy_script in "${policy_scripts[@]}"; do
+            if [[ "${policy_script}" == ".github/scripts/test-publisher-policy.sh" ]]; then
+              # The publisher fixture defines api_version for a function loaded via eval.
+              shellcheck -e SC2034 "${policy_script}"
+            else
+              shellcheck "${policy_script}"
+            fi
+          done
           bash .github/scripts/test-classify-promoted-release.sh
           bash .github/scripts/test-publisher-policy.sh
