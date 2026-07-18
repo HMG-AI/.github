@@ -181,6 +181,55 @@ jobs:
           set -Eeuo pipefail
           echo "sha=$(git -C candidate rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
+      - name: Synchronize the exact reviewed public export without credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          readonly export_dir="${GITHUB_WORKSPACE}/source/export"
+          readonly candidate_dir="${GITHUB_WORKSPACE}/candidate"
+          if [[ ! -d "${export_dir}" || ! -f "${export_dir}/README.md" ]]; then
+            echo "::error::The exact source checkout does not contain a complete public export"
+            exit 2
+          fi
+
+          bash source/scripts/check-export-leak.sh
+
+          # Target governance and all previously reviewed provenance records are
+          # target-owned. They survive the source-owned exact export mirror.
+          rsync -a --delete \
+            --exclude=target/ \
+            --exclude=node_modules/ \
+            --exclude=__pycache__/ \
+            --exclude='*.pyc' \
+            --exclude=.DS_Store \
+            --exclude=Cachedir.tag \
+            --exclude=CACHEDIR.TAG \
+            --exclude=.git/ \
+            --exclude=.github/ \
+            --exclude=commitlint.config.mjs \
+            --exclude=release-provenance/ \
+            "${export_dir}/" \
+            "${candidate_dir}/"
+
+          openapi_file="${candidate_dir}/openapi/hmg-server.yaml"
+          if [[ -f "${openapi_file}" ]]; then
+            cleaned_openapi="${RUNNER_TEMP}/hmg-public-openapi.yaml"
+            sed -E \
+              -e '/disable_adaptive_recall:/d' \
+              -e '/adaptive cheap-path gate/d' \
+              -e '/disable_embedding_noise_gate:/d' \
+              -e '/embedding noise prototype gate/d' \
+              -e '/embedding_noise_gate_suppressed_vector:/d' \
+              -e '/disable_symbol_fusion_boost:/d' \
+              -e '/symbol-query weighted RRF/d' \
+              -e '/disable_seed_length_penalty:/d' \
+              -e '/length-based penalty on seed-stage/d' \
+              "${openapi_file}" > "${cleaned_openapi}"
+            mv "${cleaned_openapi}" "${openapi_file}"
+          fi
+
+          bash source/scripts/check-export-leak.sh --dir="${candidate_dir}"
+
       - name: Enforce target-owned governance boundary
         shell: bash
         run: |
@@ -286,7 +335,7 @@ jobs:
           echo "asset_dir=${asset_dir}" >> "${GITHUB_OUTPUT}"
           echo "asset_set_sha256=${asset_set_sha256}" >> "${GITHUB_OUTPUT}"
 
-      - name: Add only minimal binary release provenance to the candidate
+      - name: Add signed-release metadata beside the exact public export
         shell: bash
         env:
           ARTIFACT_NAME: ${{ steps.source-run.outputs.artifact_name }}
@@ -294,13 +343,14 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_RUN_URL: ${{ steps.source-run.outputs.url }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TARGET_BASE_SHA: ${{ steps.target-base.outputs.sha }}
         run: |
           set -Eeuo pipefail
           readonly metadata_directory='candidate/release-provenance'
           readonly metadata_relative_path="release-provenance/${RELEASE_TAG}.json"
           readonly metadata_path="candidate/${metadata_relative_path}"
-          if [[ -L "${metadata_directory}" || -e "${metadata_path}" || -L "${metadata_path}" ]]; then
-            echo "::error::Release provenance path already exists or is unsafe: ${metadata_relative_path}"
+          if [[ -L "${metadata_directory}" || -L "${metadata_path}" ]]; then
+            echo "::error::Release provenance path is unsafe: ${metadata_relative_path}"
             exit 2
           fi
           mkdir -p "${metadata_directory}"
@@ -311,10 +361,11 @@ jobs:
             --arg source_repository 'HMG-AI/HMG' \
             --arg source_sha "${SOURCE_SHA}" \
             --arg source_workflow_run "${SOURCE_RUN_URL}" \
+            --arg target_base_sha "${TARGET_BASE_SHA}" \
             --arg version "${RELEASE_TAG#v}" \
             --argjson asset_count 17 \
             '{
-              schema_version: "hmg-public-binary-release-provenance/v1",
+              schema_version: "hmg-public-binary-release-provenance/v2",
               release_tag: $release_tag,
               version: $version,
               source_repository: $source_repository,
@@ -322,16 +373,19 @@ jobs:
               source_workflow_run: $source_workflow_run,
               source_artifact: $artifact,
               asset_count: $asset_count,
-              asset_set_sha256: $asset_set_sha256
+              asset_set_sha256: $asset_set_sha256,
+              target_base_sha: $target_base_sha
             }' > "${metadata_path}"
-          candidate_status="$(
+          provenance_status="$(
             git -C candidate status \
               --porcelain=v1 \
-              --untracked-files=all
+              --untracked-files=all \
+              -- release-provenance
           )"
-          if [[ "${candidate_status}" != "?? ${metadata_relative_path}" ]]; then
-            echo "::error::Binary promotion may add only ${metadata_relative_path}"
-            printf '%s\n' "${candidate_status}"
+          if [[ "${provenance_status}" != "?? ${metadata_relative_path}" && \
+                "${provenance_status}" != " M ${metadata_relative_path}" ]]; then
+            echo "::error::Promotion must preserve provenance history and add or replace only ${metadata_relative_path}"
+            printf '%s\n' "${provenance_status}"
             exit 2
           fi
 
@@ -873,12 +927,12 @@ jobs:
 
           pr_title="chore(public): promote HMG ${RELEASE_TAG}"
           printf -v pr_body '%s\n\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n\n%s' \
-            'Automated protected binary-only promotion from a verified HMG Actions artifact.' \
+            'Automated protected promotion of one exact HMG public export and its verified Actions artifact.' \
             "- Source repository: \`HMG-AI/HMG\`" \
             "- Source tag: \`${RELEASE_TAG}\`" \
             "- Source SHA: \`${SOURCE_SHA}\`" \
             "- Source public artifact build run: ${SOURCE_RUN_URL}" \
-            '- Repository scope: audit metadata only; no source, website, or npm synchronization' \
+            '- Repository scope: exact source export plus one signed release-provenance record; target governance and provenance history are preserved' \
             "- Candidate tree: \`${CANDIDATE_TREE}\`" \
             "- Draft asset set SHA-256: \`${ASSET_SET_SHA256}\`" \
             "- Provenance key: \`${KEY_ID}\`" \

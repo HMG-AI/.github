@@ -1,0 +1,24 @@
+name: Required HMG Public Quality
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: required-hmg-public-quality-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  public-quality:
+    if: github.repository == 'HMG-AI/HMG-public'
+    name: hmg-public-quality
+    uses: ./.github/workflows/reusable-hmg-public-quality.yml
+    with:
+      base_sha: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      head_sha: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      head_ref: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
+    permissions:
+      contents: read
