@@ -101,3 +101,62 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: bash policy-source/governance/workflow-policy/run.sh
+
+  private-source-mirror-provenance:
+    if: github.repository == 'HMG-AI/HMG-DEV-brach'
+    name: private-source-mirror-provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Reject unsupported private-mirror events
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          echo "::error::The private exact-source mirror currently accepts pull_request events only"
+          exit 2
+
+      - name: Check out immutable private-mirror policy
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: HMG-AI/.github
+          ref: ${{ github.workflow_sha }}
+          path: governance-source
+          sparse-checkout: governance/private-source-mirror
+          persist-credentials: false
+
+      - name: Check out exact private-mirror event head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: target-repository
+          persist-credentials: false
+
+      - name: Exercise private-mirror contract fixtures
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover \
+            -s governance-source/governance/private-source-mirror \
+            -p 'test_*.py'
+
+      - name: Verify signed exact-source provenance and tree equality
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 governance-source/governance/private-source-mirror/verify.py \
+            --target-repository-dir target-repository \
+            --target-sha "${TARGET_SHA}" \
+            --event-name "${EVENT_NAME}" \
+            --target-repository "${TARGET_REPOSITORY}" \
+            --target-base-ref "${TARGET_BASE_REF}" \
+            --trusted-public-key \
+              governance-source/governance/private-source-mirror/keys/ed25519-spki-sha256-6d20ed9a744fd0b6cd2d75bfc5bb8a4468c8f7b0071aa96b0e3524f0b177508b.pem
