@@ -81,6 +81,21 @@ class PrivateSourceMirrorVerifierTests(unittest.TestCase):
         self.source_tree = f"sha1:{git_output(self.source, 'rev-parse', 'HEAD^{tree}')}"
 
         self._init_repository(self.target)
+        git(
+            self.target,
+            "commit",
+            "--allow-empty",
+            "-m",
+            "chore(mirror): initialize target history",
+        )
+        (self.target / "legacy.txt").write_text(
+            "pre-mirror target state\n",
+            encoding="utf-8",
+        )
+        git(self.target, "add", "--all")
+        git(self.target, "commit", "-m", "chore(mirror): establish target base")
+        self.target_base_sha = git_output(self.target, "rev-parse", "HEAD")
+        (self.target / "legacy.txt").unlink()
         self._write_exact_tree(self.target)
         self.target_sha = self._commit_target()
 
@@ -202,6 +217,7 @@ class PrivateSourceMirrorVerifierTests(unittest.TestCase):
         *,
         event_name: str = "pull_request",
         public_key: Path | None = None,
+        target_base_sha: str | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         return run(
             "python3",
@@ -210,6 +226,8 @@ class PrivateSourceMirrorVerifierTests(unittest.TestCase):
             str(self.target),
             "--target-sha",
             self.target_sha,
+            "--target-base-sha",
+            target_base_sha or self.target_base_sha,
             "--event-name",
             event_name,
             "--target-repository",
@@ -231,6 +249,102 @@ class PrivateSourceMirrorVerifierTests(unittest.TestCase):
         output = result.stdout.decode()
         self.assertEqual(result.returncode, 0, output)
         self.assertIn("private source mirror verified", output)
+
+    def test_malformed_target_base_sha_fails(self) -> None:
+        self.assert_failed(
+            self._verify(target_base_sha="not-a-canonical-sha"),
+            "target base SHA must be a lowercase 40-character SHA-1",
+        )
+
+    def test_missing_target_base_commit_fails(self) -> None:
+        self.assert_failed(
+            self._verify(target_base_sha="0" * 40),
+            "target base commit is absent",
+        )
+
+    def test_single_parent_candidate_bound_to_wrong_event_base_fails(self) -> None:
+        message = (
+            "chore(mirror): import exact HMG source\n\n"
+            + "\n".join(self._trailers())
+            + "\n"
+        ).encode()
+        wrong_parent = git_output(self.target, "rev-parse", f"{self.target_base_sha}^")
+        result = run(
+            "git",
+            "-C",
+            str(self.target),
+            "commit-tree",
+            self.source_tree.removeprefix("sha1:"),
+            "-p",
+            wrong_parent,
+            input_bytes=message,
+        )
+        self.target_sha = result.stdout.decode().strip()
+
+        self.assert_failed(
+            self._verify(),
+            "candidate commit must have exactly one parent equal to the event base SHA",
+        )
+
+    def test_root_candidate_fails_even_when_tree_and_signature_are_valid(self) -> None:
+        message = (
+            "chore(mirror): import exact HMG source\n\n"
+            + "\n".join(self._trailers())
+            + "\n"
+        ).encode()
+        result = run(
+            "git",
+            "-C",
+            str(self.target),
+            "commit-tree",
+            self.source_tree.removeprefix("sha1:"),
+            input_bytes=message,
+        )
+        self.target_sha = result.stdout.decode().strip()
+
+        self.assert_failed(
+            self._verify(),
+            "candidate commit must have exactly one parent equal to the event base SHA",
+        )
+
+    def test_multi_commit_candidate_fails_even_when_final_tree_is_exact(self) -> None:
+        transient = self.target / "transient-target-only.txt"
+        transient.write_text("must never enter mirror history\n", encoding="utf-8")
+        git(self.target, "add", "--all")
+        git(self.target, "commit", "-m", "chore(mirror): add transient target-only history")
+        transient.unlink()
+        self.target_sha = self._commit_target()
+
+        self.assert_failed(
+            self._verify(),
+            "candidate range must contain exactly one commit",
+        )
+
+    def test_merge_commit_parent_fails_even_when_range_contains_one_commit(self) -> None:
+        message = (
+            "chore(mirror): import exact HMG source\n\n"
+            + "\n".join(self._trailers())
+            + "\n"
+        ).encode()
+        base_parent = git_output(self.target, "rev-parse", f"{self.target_base_sha}^")
+        result = run(
+            "git",
+            "-C",
+            str(self.target),
+            "commit-tree",
+            self.source_tree.removeprefix("sha1:"),
+            "-p",
+            self.target_base_sha,
+            "-p",
+            base_parent,
+            input_bytes=message,
+        )
+        self.target_sha = result.stdout.decode().strip()
+
+        self.assert_failed(
+            self._verify(),
+            "candidate commit must have exactly one parent equal to the event base SHA",
+        )
 
     def test_missing_governed_trailer_fails(self) -> None:
         self._amend_trailers(self._trailers()[:-1])
@@ -274,17 +388,17 @@ class PrivateSourceMirrorVerifierTests(unittest.TestCase):
 
     def test_target_only_path_fails(self) -> None:
         (self.target / "target-only.txt").write_text("not in HMG\n", encoding="utf-8")
-        self.target_sha = self._commit_target()
+        self.target_sha = self._commit_target(amend=True)
         self.assert_failed(self._verify(), "signed source and export trees must be identical")
 
     def test_target_only_content_change_fails(self) -> None:
         (self.target / "README.md").write_text("mirror-only fix\n", encoding="utf-8")
-        self.target_sha = self._commit_target()
+        self.target_sha = self._commit_target(amend=True)
         self.assert_failed(self._verify(), "signed source and export trees must be identical")
 
     def test_target_only_mode_change_fails(self) -> None:
         os.chmod(self.target / "run.sh", 0o644)
-        self.target_sha = self._commit_target()
+        self.target_sha = self._commit_target(amend=True)
         self.assert_failed(self._verify(), "signed source and export trees must be identical")
 
     def test_merge_group_fails_closed_until_semantics_are_defined(self) -> None:
