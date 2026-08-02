@@ -102,6 +102,31 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: bash policy-source/governance/workflow-policy/run.sh
 
+  private-source-mirror-contract-tests:
+    if: github.repository == 'HMG-AI/.github'
+    name: private-source-mirror-contract-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact governance candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          persist-credentials: false
+
+      - name: Exercise private-mirror contract fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile \
+            governance/private-source-mirror/verify.py \
+            governance/private-source-mirror/test_verify.py
+          python3 -m unittest discover \
+            -s governance/private-source-mirror \
+            -p 'test_*.py'
+
   private-source-mirror-provenance:
     if: github.repository == 'HMG-AI/HMG-DEV-brach'
     name: private-source-mirror-provenance
@@ -130,6 +155,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           path: target-repository
           persist-credentials: false
 
@@ -147,6 +173,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          TARGET_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TARGET_BASE_REF: ${{ github.event.pull_request.base.ref }}
           TARGET_REPOSITORY: ${{ github.repository }}
           TARGET_SHA: ${{ github.event.pull_request.head.sha }}
@@ -155,6 +182,7 @@ jobs:
           python3 governance-source/governance/private-source-mirror/verify.py \
             --target-repository-dir target-repository \
             --target-sha "${TARGET_SHA}" \
+            --target-base-sha "${TARGET_BASE_SHA}" \
             --event-name "${EVENT_NAME}" \
             --target-repository "${TARGET_REPOSITORY}" \
             --target-base-ref "${TARGET_BASE_REF}" \

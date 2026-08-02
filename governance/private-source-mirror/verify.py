@@ -71,6 +71,23 @@ def require_repository(path: Path, label: str) -> None:
         raise VerificationError(f"{label} repository must use the governed sha1 object format")
 
 
+def require_single_commit_candidate(target: Path, target_base_sha: str, target_sha: str) -> None:
+    if SHA1_RE.fullmatch(target_base_sha) is None:
+        raise VerificationError("target base SHA must be a lowercase 40-character SHA-1")
+    if git(target, "cat-file", "-e", f"{target_base_sha}^{{commit}}", check=False).returncode != 0:
+        raise VerificationError("target base commit is absent")
+
+    commit_count = git_output(target, "rev-list", "--count", f"{target_base_sha}..{target_sha}")
+    if commit_count != "1":
+        raise VerificationError("candidate range must contain exactly one commit")
+
+    parents = git_output(target, "show", "-s", "--format=%P", target_sha).split()
+    if parents != [target_base_sha]:
+        raise VerificationError(
+            "candidate commit must have exactly one parent equal to the event base SHA"
+        )
+
+
 def parse_trailers(target: Path, target_sha: str) -> dict[str, str]:
     message = git(target, "show", "-s", "--format=%B", target_sha).stdout
     parsed = run("git", "interpret-trailers", "--parse", input_bytes=message)
@@ -173,6 +190,7 @@ def verify(args: argparse.Namespace) -> None:
     require_repository(target, "target")
     if git(target, "cat-file", "-e", f"{args.target_sha}^{{commit}}", check=False).returncode != 0:
         raise VerificationError("target commit is absent")
+    require_single_commit_candidate(target, args.target_base_sha, args.target_sha)
 
     trailers = parse_trailers(target, args.target_sha)
     if trailers["HMG-Mirror-Contract"] != CONTRACT:
@@ -214,6 +232,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target-repository-dir", type=Path, required=True)
     parser.add_argument("--target-sha", required=True)
+    parser.add_argument("--target-base-sha", required=True)
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--target-repository", required=True)
     parser.add_argument("--target-base-ref", required=True)
