@@ -110,22 +110,50 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Check out immutable private-mirror contract fixtures
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: HMG-AI/.github
+          ref: ${{ github.workflow_sha }}
+          path: governance-source
+          sparse-checkout: governance/private-source-mirror
+          persist-credentials: false
+
       - name: Check out exact governance candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          path: governance-candidate
           persist-credentials: false
 
-      - name: Exercise private-mirror contract fixtures
+      - name: Exercise immutable fixtures against the candidate verifier
         shell: bash
         run: |
           set -Eeuo pipefail
+          mkdir contract-under-test
+          cp \
+            governance-source/governance/private-source-mirror/test_verify.py \
+            contract-under-test/test_verify.py
+          cp \
+            governance-candidate/governance/private-source-mirror/verify.py \
+            contract-under-test/verify.py
           python3 -m py_compile \
-            governance/private-source-mirror/verify.py \
-            governance/private-source-mirror/test_verify.py
-          python3 -m unittest discover \
-            -s governance/private-source-mirror \
-            -p 'test_*.py'
+            contract-under-test/verify.py \
+            contract-under-test/test_verify.py
+          python3 - <<'PY'
+          import sys
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover(
+              "contract-under-test",
+              pattern="test_*.py",
+          )
+          count = suite.countTestCases()
+          if count != 19:
+              raise SystemExit(f"expected 19 immutable contract tests, discovered {count}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
 
   private-source-mirror-provenance:
     if: github.repository == 'HMG-AI/HMG-DEV-brach'
