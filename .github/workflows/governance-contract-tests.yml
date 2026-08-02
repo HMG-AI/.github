@@ -1,0 +1,48 @@
+name: Candidate Governance Contract Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: governance-contract-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  private-source-mirror:
+    name: candidate-private-source-mirror-contract-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact governance candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          persist-credentials: false
+
+      - name: Exercise candidate private-mirror contract fixtures
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 -m py_compile \
+            governance/private-source-mirror/verify.py \
+            governance/private-source-mirror/test_verify.py
+          python3 - <<'PY'
+          import sys
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover(
+              "governance/private-source-mirror",
+              pattern="test_*.py",
+          )
+          count = suite.countTestCases()
+          if count != 19:
+              raise SystemExit(f"expected 19 candidate contract tests, discovered {count}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
