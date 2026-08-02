@@ -38,7 +38,7 @@ jobs:
           done
 
       - name: Check out caller repository history
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out immutable organization commit policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: HMG-AI/.github
           ref: ${{ github.workflow_sha }}
@@ -77,7 +77,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out immutable organization policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: HMG-AI/.github
           ref: ${{ github.workflow_sha }}
@@ -85,7 +85,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out exact event head
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           fetch-depth: 0
@@ -111,7 +111,7 @@ jobs:
       contents: read
     steps:
       - name: Check out immutable private-mirror contract fixtures
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: HMG-AI/.github
           ref: ${{ github.workflow_sha }}
@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
 
       - name: Check out exact governance candidate
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           path: governance-candidate
@@ -170,7 +170,7 @@ jobs:
 
       - name: Check out immutable private-mirror policy
         if: github.event_name == 'pull_request'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: HMG-AI/.github
           ref: ${{ github.workflow_sha }}
@@ -180,7 +180,7 @@ jobs:
 
       - name: Check out exact private-mirror event head
         if: github.event_name == 'pull_request'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
